@@ -1,5 +1,8 @@
 package com.iris.gallery.ui
 
+import android.app.Activity
+import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
@@ -64,34 +67,26 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
     // 1. Primary EDIT intent with specific MIME
     val editIntent = Intent(Intent.ACTION_EDIT).apply {
         setDataAndType(uri, mimeType)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
         putExtra(Intent.EXTRA_STREAM, uri)
-        clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
+        clipData = ClipData.newUri(context.contentResolver, "media", uri)
     }
 
     // 2. Generic EDIT intent with wildcard MIME (image/* or video/*)
     val genericEditIntent = Intent(Intent.ACTION_EDIT).apply {
         setDataAndType(uri, wildcardMime)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
         putExtra(Intent.EXTRA_STREAM, uri)
-        clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
+        clipData = ClipData.newUri(context.contentResolver, "media", uri)
     }
 
     // 3. Custom camera editor action (com.android.camera.action.EDITOR)
     val cameraEditIntent = Intent("com.android.camera.action.EDITOR").apply {
         setDataAndType(uri, mimeType)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
         putExtra(Intent.EXTRA_STREAM, uri)
-        clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
+        clipData = ClipData.newUri(context.contentResolver, "media", uri)
     }
-
-    // Query available activities (strictly excluding ourselves)
-    val editMatches = runCatching { pm.queryIntentActivities(editIntent, 0) }.getOrDefault(emptyList())
-        .filter { it.activityInfo.packageName != context.packageName }
-    val genericEditMatches = runCatching { pm.queryIntentActivities(genericEditIntent, 0) }.getOrDefault(emptyList())
-        .filter { it.activityInfo.packageName != context.packageName }
-    val cameraMatches = runCatching { pm.queryIntentActivities(cameraEditIntent, 0) }.getOrDefault(emptyList())
-        .filter { it.activityInfo.packageName != context.packageName }
 
     // Known generic sharing handlers that should never be shown in an editor chooser
     val shareBlacklist = setOf(
@@ -110,38 +105,88 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
         "com.android.nfc",
     )
 
-    // For videos, if no ACTION_EDIT app exists, query ACTION_SEND but only keep authentic video editors
+    fun isAllowedEditor(pkg: String): Boolean {
+        return pkg != context.packageName &&
+            pkg !in shareBlacklist &&
+            !shareBlacklist.any { bl -> pkg == bl || pkg.startsWith("$bl.") }
+    }
+
+    // Query available activities (strictly excluding ourselves and generic sharing targets)
+    val editMatches = runCatching { pm.queryIntentActivities(editIntent, 0) }.getOrDefault(emptyList())
+        .filter { isAllowedEditor(it.activityInfo.packageName) }
+    val editIntents = editMatches.map { match ->
+        Intent(editIntent).apply {
+            component = ComponentName(match.activityInfo.packageName, match.activityInfo.name)
+        }
+    }
+
+    val genericEditMatches = runCatching { pm.queryIntentActivities(genericEditIntent, 0) }.getOrDefault(emptyList())
+        .filter { isAllowedEditor(it.activityInfo.packageName) }
+    val genericEditIntents = genericEditMatches.map { match ->
+        Intent(genericEditIntent).apply {
+            component = ComponentName(match.activityInfo.packageName, match.activityInfo.name)
+        }
+    }
+
+    val cameraMatches = runCatching { pm.queryIntentActivities(cameraEditIntent, 0) }.getOrDefault(emptyList())
+        .filter { isAllowedEditor(it.activityInfo.packageName) }
+    val cameraEditIntents = cameraMatches.map { match ->
+        Intent(cameraEditIntent).apply {
+            component = ComponentName(match.activityInfo.packageName, match.activityInfo.name)
+        }
+    }
+
+    // For videos, external editors (CapCut, InShot, VN, YouCut, Google Photos EditVideoActivity, etc.)
+    // rarely register ACTION_EDIT and instead register ACTION_SEND or dedicated editor activities.
     val specificVideoEditorIntents = if (image.isVideo) {
+        val editorKeywords = listOf(
+            "edit", "cut", "shot", "video", "maker", "clip",
+            "film", "movie", "vlog", "vn", "capcut", "inshot",
+            "youcut", "kinemaster", "powerdirector", "motion"
+        )
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
-            clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newUri(context.contentResolver, "media", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
         }
         val sendMatches = runCatching { pm.queryIntentActivities(sendIntent, 0) }.getOrDefault(emptyList())
-            .filter { match ->
-                val pkg = match.activityInfo.packageName
-                pkg != context.packageName && pkg !in shareBlacklist && !shareBlacklist.any { pkg.startsWith(it) }
-            }
+            .filter { isAllowedEditor(it.activityInfo.packageName) }
             .filter { match ->
                 val pkg = match.activityInfo.packageName.lowercase()
+                val cls = match.activityInfo.name.lowercase()
                 val label = runCatching { match.loadLabel(pm).toString().lowercase() }.getOrDefault("")
-                listOf("edit", "cut", "shot", "video", "maker", "clip", "film", "movie", "vlog", "vn", "capcut", "inshot", "youcut", "kinemaster", "powerdirector", "motion").any {
-                    pkg.contains(it) || label.contains(it)
-                }
+                (pkg == "com.google.android.apps.photos" && cls.contains("editvideo")) ||
+                    editorKeywords.any { pkg.contains(it) || cls.contains(it) || label.contains(it) }
             }
         sendMatches.map { match ->
-            Intent(Intent.ACTION_SEND).apply {
-                component = android.content.ComponentName(match.activityInfo.packageName, match.activityInfo.name)
-                type = mimeType
-                putExtra(Intent.EXTRA_STREAM, uri)
-                clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            Intent(sendIntent).apply {
+                component = ComponentName(match.activityInfo.packageName, match.activityInfo.name)
             }
         }
     } else {
         emptyList()
     }
+
+    // Deduplicate by package name so no app appears multiple times in the chooser
+    val candidateIntents = buildList {
+        addAll(editIntents)
+        addAll(genericEditIntents)
+        addAll(cameraEditIntents)
+        addAll(specificVideoEditorIntents)
+    }.distinctBy { it.component?.packageName }
+
+    val baseIntent = candidateIntents.firstOrNull()
+    if (baseIntent == null) {
+        android.widget.Toast.makeText(
+            context,
+            context.getString(R.string.no_external_editor_found),
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
+        return
+    }
+
+    val extraIntents = candidateIntents.drop(1)
 
     val chooserTitle = if (image.isVideo) {
         context.getString(R.string.edit_video_with_external_title)
@@ -149,26 +194,14 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
         context.getString(R.string.edit_with_external_title)
     }
 
-    val baseIntent = when {
-        editMatches.isNotEmpty() -> editIntent
-        genericEditMatches.isNotEmpty() -> genericEditIntent
-        cameraMatches.isNotEmpty() -> cameraEditIntent
-        specificVideoEditorIntents.isNotEmpty() -> specificVideoEditorIntents.first()
-        else -> editIntent
-    }
-
-    val extraIntents = mutableListOf<Intent>()
-    if (baseIntent != editIntent && editMatches.isNotEmpty()) extraIntents.add(editIntent)
-    if (baseIntent != genericEditIntent && genericEditMatches.isNotEmpty()) extraIntents.add(genericEditIntent)
-    if (baseIntent != cameraEditIntent && cameraMatches.isNotEmpty()) extraIntents.add(cameraEditIntent)
-    specificVideoEditorIntents.drop(if (baseIntent in specificVideoEditorIntents) 1 else 0).forEach {
-        extraIntents.add(it)
-    }
-
     val chooserIntent = Intent.createChooser(baseIntent, chooserTitle).apply {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        clipData = ClipData.newUri(context.contentResolver, "media", uri)
         if (extraIntents.isNotEmpty()) {
             putExtra(Intent.EXTRA_INITIAL_INTENTS, extraIntents.toTypedArray())
+        }
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }
 
