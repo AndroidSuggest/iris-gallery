@@ -64,21 +64,23 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
     // 1. Primary EDIT intent with specific MIME
     val editIntent = Intent(Intent.ACTION_EDIT).apply {
         setDataAndType(uri, mimeType)
+        clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     // 2. Generic EDIT intent with wildcard MIME (image/* or video/*)
     val genericEditIntent = Intent(Intent.ACTION_EDIT).apply {
         setDataAndType(uri, wildcardMime)
+        clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     // 3. Custom camera editor action (com.android.camera.action.EDITOR)
     val cameraEditIntent = Intent("com.android.camera.action.EDITOR").apply {
         setDataAndType(uri, mimeType)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         putExtra(Intent.EXTRA_STREAM, uri)
         clipData = android.content.ClipData.newUri(context.contentResolver, "media", uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 
     // Query available activities (strictly excluding ourselves)
