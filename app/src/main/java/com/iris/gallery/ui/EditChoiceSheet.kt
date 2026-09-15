@@ -192,8 +192,7 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
                 android.widget.Toast.LENGTH_SHORT
             ).show()
         }
-    }
-    else {
+    } else {
          android.widget.Toast.makeText(
             context,
             context.getString(R.string.no_external_editor_found),
