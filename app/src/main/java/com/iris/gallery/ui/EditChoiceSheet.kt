@@ -167,11 +167,25 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
     }
 
     if (baseIntent != null) {
+        baseIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        
         val extraIntents = mutableListOf<Intent>()
-        editIntents.filter { it.component != baseIntent.component }.forEach { extraIntents.add(it) }
-        genericEditIntents.filter { it.component != baseIntent.component }.forEach { extraIntents.add(it) }
-        cameraEditIntents.filter { it.component != baseIntent.component }.forEach { extraIntents.add(it) }
-        specificVideoEditorIntents.filter { it.component != baseIntent.component }.forEach { extraIntents.add(it) }
+        editIntents.filter { it.component != baseIntent.component }.forEach {
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            extraIntents.add(it)
+        }
+        genericEditIntents.filter { it.component != baseIntent.component }.forEach {
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            extraIntents.add(it)
+        }
+        cameraEditIntents.filter { it.component != baseIntent.component }.forEach {
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            extraIntents.add(it)
+        }
+        specificVideoEditorIntents.forEach {
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            extraIntents.add(it)
+        }
 
         val chooserIntent = Intent.createChooser(baseIntent, chooserTitle).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
