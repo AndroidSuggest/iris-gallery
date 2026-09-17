@@ -113,6 +113,7 @@ import com.iris.gallery.data.StartupTab
 import com.iris.gallery.data.SUPPORTED_LANGUAGES
 import com.iris.gallery.data.ThemeMode
 import com.iris.gallery.data.TimelineDateFormat
+import com.iris.gallery.data.ViewerHeaderStyle
 import com.iris.gallery.data.getSystemDefaultLocale
 import com.iris.gallery.ui.LanguageSelectionBottomSheet
 import com.iris.gallery.ui.setAppLanguage
@@ -137,6 +138,7 @@ fun SettingsScreen(
     var showDisablePinDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showDateFormatDialog by remember { mutableStateOf(false) }
+    var showViewerHeaderDialog by remember { mutableStateOf(false) }
     var showTimePickerDialog by remember { mutableStateOf(false) }
     var showExcludedFoldersDialog by remember { mutableStateOf(false) }
 
@@ -202,7 +204,7 @@ fun SettingsScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                         val langLabel = if (currentLang.code.isEmpty()) {
-                            val sysLocale = getSystemDefaultLocale()
+                            val sysLocale = getSystemDefaultLocale(context)
                             "${currentLang.flag} ${stringResource(R.string.settings_language_system_default)} (${sysLocale.getDisplayLanguage(sysLocale).replaceFirstChar { it.uppercase() }})"
                         } else {
                             "${currentLang.flag} ${currentLang.nativeName}"
@@ -896,6 +898,39 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { showViewerHeaderDialog = true }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                stringResource(R.string.settings_viewer_header_title),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                stringResource(settings.viewerHeaderStyle.getDisplayNameRes()),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Icon(
+                            Icons.AutoMirrored.Outlined.ArrowForwardIos,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
                     SettingsSwitchRow(
                         title = stringResource(R.string.settings_autoplay_video_title),
                         subtitle = stringResource(R.string.settings_autoplay_video_desc),
@@ -1440,6 +1475,24 @@ fun SettingsScreen(
             },
             onCustomPatternChange = { pattern ->
                 preferences.setCustomTimelineDateFormat(pattern)
+            }
+        )
+    }
+
+    if (showViewerHeaderDialog) {
+        ViewerHeaderBottomSheet(
+            currentStyle = settings.viewerHeaderStyle,
+            showPageCount = settings.showViewerPageCount,
+            showTime = settings.showViewerTime,
+            onDismiss = { showViewerHeaderDialog = false },
+            onStyleSelected = { style ->
+                preferences.setViewerHeaderStyle(style)
+            },
+            onShowPageCountChange = { show ->
+                preferences.setShowViewerPageCount(show)
+            },
+            onShowTimeChange = { show ->
+                preferences.setShowViewerTime(show)
             }
         )
     }

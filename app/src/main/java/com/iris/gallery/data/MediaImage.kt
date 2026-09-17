@@ -136,6 +136,7 @@ data class ExifEditRequest(
     val longitude: Double? = null,
     val removeGps: Boolean = false,
     val stripAllExif: Boolean = false,
+    val offsetTimeOriginal: String? = null,
 )
 
 fun cleanExifString(raw: String?): String? {
@@ -181,12 +182,53 @@ fun cleanUserComment(raw: String?): String? {
         return null
     }
 
-    val printable = text.count { it in ' '..'~' || it.isLetterOrDigit() || it in "\n\r\t" }
+    val printable = text.count { !it.isISOControl() || it in "\n\r\t" }
     if (printable.toFloat() / text.length < 0.6f) {
         return null
     }
 
     return text.ifBlank { null }
+}
+
+fun decodeExifUserComment(exif: androidx.exifinterface.media.ExifInterface): String? {
+    val bytes = runCatching {
+        exif.getAttributeBytes(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT)
+    }.getOrNull()
+    if (bytes != null && bytes.isNotEmpty()) {
+        val decoded = runCatching {
+            if (bytes.size >= 8) {
+                val header = String(bytes, 0, 8, java.nio.charset.StandardCharsets.US_ASCII)
+                when {
+                    header.startsWith("ASCII") -> {
+                        String(bytes, 8, bytes.size - 8, java.nio.charset.StandardCharsets.US_ASCII)
+                    }
+                    header.startsWith("UNICODE") -> {
+                        val contentBytes = bytes.copyOfRange(8, bytes.size)
+                        if (contentBytes.size >= 2) {
+                            if (contentBytes[0] == 0xFE.toByte() && contentBytes[1] == 0xFF.toByte()) {
+                                String(contentBytes, 2, contentBytes.size - 2, java.nio.charset.StandardCharsets.UTF_16BE)
+                            } else if (contentBytes[0] == 0xFF.toByte() && contentBytes[1] == 0xFE.toByte()) {
+                                String(contentBytes, 2, contentBytes.size - 2, java.nio.charset.StandardCharsets.UTF_16LE)
+                            } else {
+                                val s = String(contentBytes, java.nio.charset.StandardCharsets.UTF_16LE)
+                                if (s.any { it == '\u0000' } || s.count { !it.isISOControl() } < s.length * 0.5f) {
+                                    String(contentBytes, java.nio.charset.StandardCharsets.UTF_16BE)
+                                } else s
+                            }
+                        } else ""
+                    }
+                    else -> {
+                        String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+                    }
+                }
+            } else {
+                String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+            }
+        }.getOrNull()
+        val cleaned = cleanUserComment(decoded)
+        if (!cleaned.isNullOrBlank()) return cleaned
+    }
+    return cleanUserComment(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT))
 }
 
 fun cleanImageDescription(raw: String?): String? {
@@ -265,14 +307,9 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri): ExifMetadata {
             val imageDesc = cleanImageDescription(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION))
             val documentName = cleanExifString(exif.getAttribute("DocumentName"))
                 ?: cleanExifString(exif.getAttribute("XPTitle"))
-                ?: imageDesc
-            val rawUserComment = cleanUserComment(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT))
+            val rawUserComment = decodeExifUserComment(exif)
             val xpComment = cleanExifString(exif.getAttribute("XPComment"))
-            val userComment = if (jpegComments.isNotEmpty() && jpegComments.contains(rawUserComment)) {
-                null
-            } else {
-                rawUserComment
-            }
+            val userComment = rawUserComment ?: xpComment
             val imageUniqueId = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_UNIQUE_ID))
             val offsetTime = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL))
                 ?: cleanExifString(exif.getAttribute("OffsetTime"))
@@ -411,13 +448,11 @@ fun applyExifToExifInterface(exif: androidx.exifinterface.media.ExifInterface, r
         val effectiveDesc = request.imageDescription?.trim()?.ifBlank { null }
         val effectiveUserComment = request.userComment?.trim()?.ifBlank { null }
 
-        val finalDescription = effectiveTitle ?: effectiveDesc
-        val finalComment = effectiveUserComment ?: (if (effectiveTitle != null) effectiveDesc else null)
-
         exif.setAttribute("DocumentName", effectiveTitle)
         exif.setAttribute("XPTitle", effectiveTitle)
-        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION, finalDescription)
-        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT, finalComment)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION, effectiveDesc)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT, effectiveUserComment)
+        exif.setAttribute("XPComment", effectiveUserComment)
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ARTIST, request.artist?.trim()?.ifBlank { null })
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_COPYRIGHT, request.copyright?.trim()?.ifBlank { null })
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_SOFTWARE, request.software?.trim()?.ifBlank { null })
@@ -427,6 +462,13 @@ fun applyExifToExifInterface(exif: androidx.exifinterface.media.ExifInterface, r
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL, request.lensModel?.trim()?.ifBlank { null })
 
         val dateFormat = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+        val offset = request.offsetTimeOriginal?.trim()
+        if (!offset.isNullOrBlank()) {
+            val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
+            dateFormat.timeZone = java.util.TimeZone.getTimeZone(prefix + offset)
+            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
+            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME, offset)
+        }
         val dateStr = dateFormat.format(java.util.Date(request.dateTakenMillis))
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL, dateStr)
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME, dateStr)

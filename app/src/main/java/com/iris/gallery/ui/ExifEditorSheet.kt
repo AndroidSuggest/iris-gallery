@@ -85,7 +85,20 @@ fun ExifEditorSheet(
     onSave: (ExifEditRequest) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
+    val photoTimeZone = remember(exif?.offsetTimeOriginal) {
+        val offset = exif?.offsetTimeOriginal?.trim()
+        if (!offset.isNullOrBlank()) {
+            val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
+            java.util.TimeZone.getTimeZone(prefix + offset)
+        } else {
+            java.util.TimeZone.getDefault()
+        }
+    }
+    val dateFormat = remember(photoTimeZone) {
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
+            timeZone = photoTimeZone
+        }
+    }
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var showStripDialog by remember { mutableStateOf(false) }
@@ -96,7 +109,22 @@ fun ExifEditorSheet(
         if (t.isBlank() || t == image.name || t == image.name.substringBeforeLast('.')) "" else t
     }
     var mediaTitle by remember(image.id, exif, initialTitle) { mutableStateOf(initialTitle) }
-    var dateTakenStr by remember(image.id) { mutableStateOf(dateFormat.format(Date(image.dateTaken))) }
+    val initialDateStr = remember(image.id, exif?.dateTimeOriginal, image.dateTaken, photoTimeZone) {
+        val raw = exif?.dateTimeOriginal?.trim()
+        if (!raw.isNullOrBlank() && raw.length >= 19) {
+            val parts = raw.split(" ")
+            if (parts.size == 2) {
+                val datePart = parts[0].replace(':', '-')
+                val timePart = parts[1]
+                "$datePart $timePart"
+            } else {
+                dateFormat.format(Date(image.dateTaken))
+            }
+        } else {
+            dateFormat.format(Date(image.dateTaken))
+        }
+    }
+    var dateTakenStr by remember(image.id, initialDateStr) { mutableStateOf(initialDateStr) }
     var orientation by remember(image.id) { mutableIntStateOf((image.orientation % 360 + 360) % 360) }
 
     // Notes & Info State
@@ -643,6 +671,7 @@ fun ExifEditorSheet(
                             longitude = parsedLng,
                             removeGps = removeGps || (parsedLat == null && parsedLng == null && exif?.latitude != null),
                             stripAllExif = stripAllExif,
+                            offsetTimeOriginal = exif?.offsetTimeOriginal,
                         )
                         onSave(request)
                     },

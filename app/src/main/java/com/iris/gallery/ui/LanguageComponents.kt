@@ -271,7 +271,8 @@ private fun MaterialLanguageRow(
                     fontSize = 22.sp
                 )
                 val isSystem = language.code.isEmpty()
-                val systemLocale = remember { getSystemDefaultLocale() }
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val systemLocale = remember(context) { getSystemDefaultLocale(context) }
                 val titleText = if (isSystem) {
                     stringResource(R.string.settings_language_system_default)
                 } else {

@@ -285,6 +285,7 @@ import com.iris.gallery.data.GridSpacing
 import com.iris.gallery.data.StartupTab
 import com.iris.gallery.data.ThemeMode
 import com.iris.gallery.data.AccentColor
+import com.iris.gallery.data.ViewerHeaderStyle
 import com.iris.gallery.ui.SettingsScreen
 import com.iris.gallery.ui.AboutScreen
 import androidx.compose.material.icons.outlined.Settings
@@ -636,6 +637,9 @@ private fun GalleryApp(
                 loop = settings.loopVideo,
                 videoDoubleTapToZoom = settings.videoDoubleTapToZoom,
                 showViewerUserComments = settings.showViewerUserComments,
+                viewerHeaderStyle = settings.viewerHeaderStyle,
+                showViewerPageCount = settings.showViewerPageCount,
+                showViewerTime = settings.showViewerTime,
                 showFilmstrip = settings.showFilmstrip,
                 dismissedFilmstripTip = settings.dismissedFilmstripTip,
                 onDismissFilmstripTip = { settingsPreferences.setDismissedFilmstripTip(true) },
@@ -1209,11 +1213,13 @@ private fun BoxScope.IrisPullToRefreshIndicator(
         } else if (wasRefreshing) {
             wasRefreshing = false
             isDismissingInPlace = true
-            launch {
-                dismissAlpha.animateTo(0f, tween(220, easing = LinearOutSlowInEasing))
-            }
-            launch {
-                dismissScale.animateTo(0.65f, tween(220, easing = LinearOutSlowInEasing))
+            kotlinx.coroutines.coroutineScope {
+                launch {
+                    dismissAlpha.animateTo(0f, tween(220, easing = LinearOutSlowInEasing))
+                }
+                launch {
+                    dismissScale.animateTo(0.65f, tween(220, easing = LinearOutSlowInEasing))
+                }
             }
             isDismissingInPlace = false
             dismissAlpha.snapTo(1f)
@@ -2598,6 +2604,9 @@ private fun GalleryScaffold(
             loop = settings.loopVideo,
             videoDoubleTapToZoom = settings.videoDoubleTapToZoom,
             showViewerUserComments = settings.showViewerUserComments,
+            viewerHeaderStyle = settings.viewerHeaderStyle,
+            showViewerPageCount = settings.showViewerPageCount,
+            showViewerTime = settings.showViewerTime,
             showFilmstrip = settings.showFilmstrip,
             dismissedFilmstripTip = settings.dismissedFilmstripTip,
             onDismissFilmstripTip = { settingsPreferences.setDismissedFilmstripTip(true) },
@@ -2668,6 +2677,9 @@ private fun GalleryScaffold(
             loop = settings.loopVideo,
             videoDoubleTapToZoom = settings.videoDoubleTapToZoom,
             showViewerUserComments = settings.showViewerUserComments,
+            viewerHeaderStyle = settings.viewerHeaderStyle,
+            showViewerPageCount = settings.showViewerPageCount,
+            showViewerTime = settings.showViewerTime,
             showFilmstrip = settings.showFilmstrip,
             dismissedFilmstripTip = settings.dismissedFilmstripTip,
             onDismissFilmstripTip = { settingsPreferences.setDismissedFilmstripTip(true) },
@@ -3118,13 +3130,12 @@ private fun PhotoGrid(
                     0f
                 } else {
                     val firstVisible = gridState.firstVisibleItemIndex
-                    val mediaItem = visibleItems.firstOrNull { it.key is Long }
-                    val mediaHeight = mediaItem?.size?.height?.toFloat() ?: visibleItems.first().size.height.toFloat().coerceAtLeast(1f)
-                    val viewportHeight = layoutInfo.viewportSize.height.toFloat().coerceAtLeast(1f)
-                    val numColumns = visibleItems.filter { it.key is Long }.map { it.offset.x }.distinct().size.coerceAtLeast(1)
-                    val estimatedItemsPerScreen = ((viewportHeight / mediaHeight) * numColumns).toInt().coerceIn(1, totalItems)
-                    val maxScrollable = (totalItems - estimatedItemsPerScreen).coerceAtLeast(1)
-                    val itemOffsetProgress = (gridState.firstVisibleItemScrollOffset.toFloat() / mediaHeight).coerceIn(0f, 1f)
+                    val lastVisible = visibleItems.last().index
+                    val visibleSpan = (lastVisible - firstVisible).coerceAtLeast(1)
+                    val maxScrollable = (totalItems - visibleSpan).coerceAtLeast(1)
+                    val firstItemInfo = visibleItems.firstOrNull()
+                    val itemHeight = firstItemInfo?.size?.height?.toFloat()?.coerceAtLeast(1f) ?: 1f
+                    val itemOffsetProgress = (gridState.firstVisibleItemScrollOffset.toFloat() / itemHeight).coerceIn(0f, 1f)
                     ((firstVisible + itemOffsetProgress) / maxScrollable.toFloat()).coerceIn(0f, 1f)
                 }
             }
@@ -3399,6 +3410,7 @@ private fun PhotoGrid(
                                 }
 
                                 var lastScrolledTarget = -1
+                                var scrubScrollJob: kotlinx.coroutines.Job? = null
                                 fun updateTarget(y: Float) {
                                     val frac = calculateFraction(y)
                                     scrubFraction = frac
@@ -3406,7 +3418,8 @@ private fun PhotoGrid(
                                     scrubTargetIndex = target
                                     if (target != lastScrolledTarget) {
                                         lastScrolledTarget = target
-                                        scrubberScope.launch { gridState.scrollToItem(target) }
+                                        scrubScrollJob?.cancel()
+                                        scrubScrollJob = scrubberScope.launch { gridState.scrollToItem(target) }
                                     }
                                 }
 
@@ -3422,6 +3435,7 @@ private fun PhotoGrid(
                                 } finally {
                                     scrubberDragging = false
                                     if (scrubTargetIndex != lastScrolledTarget) {
+                                        scrubScrollJob?.cancel()
                                         scrubberScope.launch { gridState.scrollToItem(scrubTargetIndex) }
                                     }
                                 }
@@ -3491,6 +3505,9 @@ private fun PhotoViewer(
     loop: Boolean = true,
     videoDoubleTapToZoom: Boolean = false,
     showViewerUserComments: Boolean = true,
+    viewerHeaderStyle: ViewerHeaderStyle = ViewerHeaderStyle.DATE,
+    showViewerPageCount: Boolean = true,
+    showViewerTime: Boolean = true,
     showFilmstrip: Boolean = true,
     dismissedFilmstripTip: Boolean = false,
     onDismissFilmstripTip: () -> Unit = {},
@@ -3578,13 +3595,15 @@ private fun PhotoViewer(
     var showRenameDialog by remember { mutableStateOf(false) }
     var viewerAlbumAction by remember { mutableStateOf<AlbumAction?>(null) }
     val current = images[pagerState.currentPage]
-    val currentExif by produceState<ExifMetadata?>(initialValue = null, current.id, current.uri) {
+    val currentExif by produceState<ExifMetadata?>(initialValue = null, current.id, current.uri, current.dateTaken, current.description, current.title) {
         value = withContext(Dispatchers.IO) {
             loadExifMetadata(context, current.uri)
         }
     }
-    val viewerComment = remember(current.id, currentExif, current.description) {
-        currentExif?.userComment?.ifBlank { null } ?: current.description.ifBlank { null }
+    val viewerComment = remember(current.id, currentExif) {
+        currentExif?.userComment?.ifBlank { null }
+            ?: currentExif?.xpComment?.ifBlank { null }
+            ?: currentExif?.jpegComments?.firstOrNull()?.ifBlank { null }
     }
 
     fun handleEditClick(image: MediaImage) {
@@ -3768,9 +3787,7 @@ private fun PhotoViewer(
           ) {
             IconButton(onClick = { triggerAnimatedDismiss() }) { Icon(Icons.Outlined.ArrowBack, stringResource(R.string.action_back), tint = Color.White) }
             val currentLocale = rememberAppLocale()
-            val headerDate = remember(current.dateTaken, currentLocale, timelineDateFormat, smartYearHiding, customTimelineDateFormat) {
-                val tf = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT, currentLocale)
-                val timeStr = tf.format(java.util.Date(current.dateTaken))
+            val headerDate = remember(current.dateTaken, currentLocale, timelineDateFormat, smartYearHiding, customTimelineDateFormat, showViewerTime) {
                 val localDate = Instant.ofEpochMilli(current.dateTaken).atZone(ZoneId.systemDefault()).toLocalDate()
                 val isSameYear = localDate.year == LocalDate.now().year
                 val formatter = getTimelineFormatter(
@@ -3782,21 +3799,46 @@ private fun PhotoViewer(
                     smartYearHiding = smartYearHiding,
                 )
                 val dateStr = localDate.format(formatter)
-                "$dateStr · $timeStr"
+                if (showViewerTime) {
+                    val tf = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT, currentLocale)
+                    val timeStr = tf.format(java.util.Date(current.dateTaken))
+                    "$dateStr · $timeStr"
+                } else {
+                    dateStr
+                }
             }
             val pageCountText = stringResource(R.string.viewer_page_count, pagerState.currentPage + 1, images.size)
+            val pageCountPrefix = if (showViewerPageCount) "$pageCountText · " else ""
             val customTitle = current.title.takeIf { it.isNotBlank() && it != current.name && it != current.name.substringBeforeLast('.') }
-            val primaryHeaderText = customTitle ?: headerDate
-            val secondaryHeaderText = if (customTitle != null) {
-                "$pageCountText · $headerDate"
-            } else {
-                "$pageCountText · ${current.name}"
+            val titleOrName = customTitle ?: current.name
+
+            val (primaryHeaderText, secondaryHeaderText) = when (viewerHeaderStyle) {
+                ViewerHeaderStyle.DATE -> {
+                    headerDate to if (titleOrName.isNotBlank()) "$pageCountPrefix$titleOrName" else if (showViewerPageCount) pageCountText else ""
+                }
+                ViewerHeaderStyle.TITLE_OR_FILENAME -> {
+                    titleOrName to if (headerDate.isNotBlank()) "$pageCountPrefix$headerDate" else if (showViewerPageCount) pageCountText else ""
+                }
+                ViewerHeaderStyle.FILENAME -> {
+                    current.name to if (headerDate.isNotBlank()) "$pageCountPrefix$headerDate" else if (showViewerPageCount) pageCountText else ""
+                }
+                ViewerHeaderStyle.ADAPTIVE -> {
+                    if (customTitle != null) {
+                        customTitle to if (headerDate.isNotBlank()) "$pageCountPrefix$headerDate" else if (showViewerPageCount) pageCountText else ""
+                    } else {
+                        headerDate to if (current.name.isNotBlank()) "$pageCountPrefix${current.name}" else if (showViewerPageCount) pageCountText else ""
+                    }
+                }
             }
             Column(modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                Text(primaryHeaderText, color = Color.White, style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(secondaryHeaderText, color = Color.White.copy(alpha = .75f),
-                    style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (primaryHeaderText.isNotBlank()) {
+                    Text(primaryHeaderText, color = Color.White, style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (secondaryHeaderText.isNotBlank()) {
+                    Text(secondaryHeaderText, color = Color.White.copy(alpha = .75f),
+                        style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
             IconButton(onClick = { showInfo = true }) { Icon(Icons.Outlined.Info, stringResource(R.string.details_title), tint = Color.White) }
             if (!isLocked && !isInTrash && current.id > 0) {
@@ -4918,10 +4960,10 @@ private fun PhotoDetailsSheet(
                         if (commentText != null) {
                             DetailBlock(stringResource(R.string.details_exif_user_comment), commentText)
                         }
-                        if (!currentExif?.xpComment.isNullOrBlank()) {
+                        if (!currentExif?.xpComment.isNullOrBlank() && currentExif?.xpComment != commentText) {
                             DetailBlock(stringResource(R.string.details_xp_comment), currentExif!!.xpComment!!)
                         }
-                        currentExif?.jpegComments?.let { comments ->
+                        currentExif?.jpegComments?.filter { it != commentText && it != currentExif?.xpComment }?.let { comments ->
                             comments.forEachIndexed { idx, jc ->
                                 val label = if (comments.size > 1) {
                                     stringResource(R.string.details_jpeg_comment_numbered, idx + 1)
@@ -4939,16 +4981,27 @@ private fun PhotoDetailsSheet(
             }
 
             // 2. Origin Card (Captured Date & Time, Location, Artist, Copyright, Software)
-            val parsedCapturedDate = remember(currentExif?.dateTimeOriginal, image.dateTaken, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+            val parsedCapturedDate = remember(currentExif?.dateTimeOriginal, currentExif?.offsetTimeOriginal, image.dateTaken, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                val offset = currentExif?.offsetTimeOriginal?.trim()
+                val tz = if (!offset.isNullOrBlank()) {
+                    val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
+                    java.util.TimeZone.getTimeZone(prefix + offset)
+                } else {
+                    java.util.TimeZone.getDefault()
+                }
                 val dateMillis = runCatching {
                     currentExif?.dateTimeOriginal?.let { raw ->
-                        val parser = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+                        val parser = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).apply {
+                            timeZone = tz
+                        }
                         parser.parse(raw)?.time
                     }
                 }.getOrNull() ?: image.dateTaken
-                val tf = DateFormat.getTimeInstance(DateFormat.MEDIUM, currentLocale)
+                val tf = DateFormat.getTimeInstance(DateFormat.MEDIUM, currentLocale).apply {
+                    timeZone = tz
+                }
                 val timeStr = tf.format(Date(dateMillis))
-                val localDate = Instant.ofEpochMilli(dateMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+                val localDate = Instant.ofEpochMilli(dateMillis).atZone(tz.toZoneId()).toLocalDate()
                 val formatter = getTimelineFormatter(
                     format = timelineDateFormat,
                     isSameYear = false,
@@ -4957,7 +5010,8 @@ private fun PhotoDetailsSheet(
                     customPattern = customTimelineDateFormat,
                     smartYearHiding = false,
                 )
-                "${localDate.format(formatter)} · $timeStr"
+                val tzSuffix = if (!offset.isNullOrBlank()) " ($offset)" else ""
+                "${localDate.format(formatter)} · $timeStr$tzSuffix"
             }
             val hasOrigin = parsedCapturedDate.isNotBlank() ||
                 (currentExif?.latitude != null && currentExif.longitude != null) ||
@@ -5107,10 +5161,14 @@ private fun PhotoDetailsSheet(
                             }
                         }
                     }
-                    val formattedDate = remember(image.dateTaken, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                    val modifiedMillis = remember(image.path, image.dateTaken) {
+                        val f = File(image.path)
+                        if (f.exists() && f.lastModified() > 0) f.lastModified() else image.dateTaken
+                    }
+                    val formattedDate = remember(modifiedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
                         val tf = DateFormat.getTimeInstance(DateFormat.SHORT, currentLocale)
-                        val timeStr = tf.format(Date(image.dateTaken))
-                        val localDate = Instant.ofEpochMilli(image.dateTaken).atZone(ZoneId.systemDefault()).toLocalDate()
+                        val timeStr = tf.format(Date(modifiedMillis))
+                        val localDate = Instant.ofEpochMilli(modifiedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
                         val formatter = getTimelineFormatter(
                             format = timelineDateFormat,
                             isSameYear = false,

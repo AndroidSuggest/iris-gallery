@@ -37,6 +37,27 @@ enum class TimelineDateFormat {
     }
 }
 
+enum class ViewerHeaderStyle {
+    DATE,
+    TITLE_OR_FILENAME,
+    FILENAME,
+    ADAPTIVE;
+
+    fun getDisplayNameRes(): Int = when (this) {
+        DATE -> R.string.settings_viewer_header_style_date
+        TITLE_OR_FILENAME -> R.string.settings_viewer_header_style_title
+        FILENAME -> R.string.settings_viewer_header_style_filename
+        ADAPTIVE -> R.string.settings_viewer_header_style_adaptive
+    }
+
+    fun getDescriptionRes(): Int = when (this) {
+        DATE -> R.string.settings_viewer_header_style_date_desc
+        TITLE_OR_FILENAME -> R.string.settings_viewer_header_style_title_desc
+        FILENAME -> R.string.settings_viewer_header_style_filename_desc
+        ADAPTIVE -> R.string.settings_viewer_header_style_adaptive_desc
+    }
+}
+
 data class AppLanguage(
     val code: String, // "" for system, or "en", "ar", "es", etc.
     val displayName: String,
@@ -60,10 +81,18 @@ val SUPPORTED_LANGUAGES = listOf(
     AppLanguage("tr", "Turkish", "Türkçe", "🇹🇷"),
 )
 
-fun getSystemDefaultLocale(): java.util.Locale {
+fun getSystemDefaultLocale(context: Context? = null): java.util.Locale {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val appCtx = context ?: runCatching { com.iris.gallery.IrisApplication.instance }.getOrNull()
+        val lm = appCtx?.getSystemService(android.app.LocaleManager::class.java)
+        val sysLocales = lm?.systemLocales
+        if (sysLocales != null && !sysLocales.isEmpty) {
+            return sysLocales[0]
+        }
+    }
     val config = android.content.res.Resources.getSystem().configuration
     return if (Build.VERSION.SDK_INT >= 24) {
-        config.locales[0] ?: java.util.Locale.getDefault()
+        if (!config.locales.isEmpty) config.locales[0] else java.util.Locale.getDefault()
     } else {
         @Suppress("DEPRECATION")
         config.locale ?: java.util.Locale.getDefault()
@@ -98,6 +127,9 @@ data class SettingsState(
     val loopVideo: Boolean = true,
     val videoDoubleTapToZoom: Boolean = false,
     val showViewerUserComments: Boolean = true,
+    val viewerHeaderStyle: ViewerHeaderStyle = ViewerHeaderStyle.DATE,
+    val showViewerPageCount: Boolean = true,
+    val showViewerTime: Boolean = true,
     val showFilmstrip: Boolean = true,
     val dismissedFilmstripTip: Boolean = false,
     val pinchToRotate: Boolean = true,
@@ -158,6 +190,9 @@ class SettingsPreferences(context: Context) {
     fun setLoopVideo(loop: Boolean) = update { copy(loopVideo = loop) }
     fun setVideoDoubleTapToZoom(enabled: Boolean) = update { copy(videoDoubleTapToZoom = enabled) }
     fun setShowViewerUserComments(show: Boolean) = update { copy(showViewerUserComments = show) }
+    fun setViewerHeaderStyle(style: ViewerHeaderStyle) = update { copy(viewerHeaderStyle = style) }
+    fun setShowViewerPageCount(show: Boolean) = update { copy(showViewerPageCount = show) }
+    fun setShowViewerTime(show: Boolean) = update { copy(showViewerTime = show) }
     fun setShowFilmstrip(show: Boolean) = update { copy(showFilmstrip = show) }
     fun setDismissedFilmstripTip(dismissed: Boolean) = update { copy(dismissedFilmstripTip = dismissed) }
     fun setPinchToRotate(enabled: Boolean) = update { copy(pinchToRotate = enabled) }
@@ -242,6 +277,9 @@ class SettingsPreferences(context: Context) {
             loopVideo = prefs.getBoolean("loop_video", true),
             videoDoubleTapToZoom = prefs.getBoolean("video_double_tap_to_zoom", false),
             showViewerUserComments = prefs.getBoolean("show_viewer_user_comments", true),
+            viewerHeaderStyle = runCatching { ViewerHeaderStyle.valueOf(prefs.getString("viewer_header_style", null).orEmpty()) }.getOrDefault(ViewerHeaderStyle.DATE),
+            showViewerPageCount = prefs.getBoolean("show_viewer_page_count", true),
+            showViewerTime = prefs.getBoolean("show_viewer_time", true),
             showFilmstrip = prefs.getBoolean("show_filmstrip", true),
             dismissedFilmstripTip = prefs.getBoolean("dismissed_filmstrip_tip", false),
             pinchToRotate = prefs.getBoolean("pinch_to_rotate", true),
@@ -288,6 +326,9 @@ class SettingsPreferences(context: Context) {
             .putBoolean("loop_video", state.loopVideo)
             .putBoolean("video_double_tap_to_zoom", state.videoDoubleTapToZoom)
             .putBoolean("show_viewer_user_comments", state.showViewerUserComments)
+            .putString("viewer_header_style", state.viewerHeaderStyle.name)
+            .putBoolean("show_viewer_page_count", state.showViewerPageCount)
+            .putBoolean("show_viewer_time", state.showViewerTime)
             .putBoolean("show_filmstrip", state.showFilmstrip)
             .putBoolean("dismissed_filmstrip_tip", state.dismissedFilmstripTip)
             .putBoolean("pinch_to_rotate", state.pinchToRotate)

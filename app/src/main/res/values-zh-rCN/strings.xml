@@ -295,6 +295,21 @@
     <string name="settings_album_count_desc">在相册名称下方显示项目数量</string>
 
     <string name="settings_section_viewer">浏览与播放</string>
+    <string name="settings_viewer_header_title">查看器顶部标题</string>
+    <string name="settings_viewer_header_desc">自定义媒体查看器顶部的主标题和副标题内容</string>
+    <string name="settings_viewer_header_style_date">日期在上</string>
+    <string name="settings_viewer_header_style_date_desc">第一行显示拍摄日期，下方显示标题或文件名</string>
+    <string name="settings_viewer_header_style_title">标题或文件名在上</string>
+    <string name="settings_viewer_header_style_title_desc">第一行显示自定义标题或文件名，下方显示日期</string>
+    <string name="settings_viewer_header_style_filename">文件名在上</string>
+    <string name="settings_viewer_header_style_filename_desc">第一行始终显示文件名，下方显示日期</string>
+    <string name="settings_viewer_header_style_adaptive">自适应（标题优先）</string>
+    <string name="settings_viewer_header_style_adaptive_desc">若有标题则显示标题，否则显示拍摄日期</string>
+    <string name="settings_viewer_show_page_count_title">显示位置计数</string>
+    <string name="settings_viewer_show_page_count_desc">显示当前项目序号与总数（如 1 / 45）</string>
+    <string name="settings_viewer_show_time_title">包含拍摄时间</string>
+    <string name="settings_viewer_show_time_desc">在日期旁显示具体时间</string>
+    <string name="settings_viewer_header_preview">实时预览</string>
     <string name="settings_autoplay_video_title">自动播放视频</string>
     <string name="settings_autoplay_video_desc">在查看器中打开视频时立即开始播放</string>
     <string name="settings_loop_video_title">循环播放视频</string>
@@ -648,7 +663,14 @@
     <string name="editor_category_markup">标记</string>
     <string name="editor_category_effects">隐私</string>
     <string name="editor_mode_draw">画笔</string>
+    <string name="editor_mode_shape">形状</string>
     <string name="editor_mode_text">文本</string>
+    <string name="editor_shape_rect">矩形</string>
+    <string name="editor_shape_oval">圆形</string>
+    <string name="editor_shape_arrow">箭头</string>
+    <string name="editor_shape_line">直线</string>
+    <string name="editor_shape_outline">轮廓</string>
+    <string name="editor_shape_fill">填充</string>
     <string name="editor_mode_blur">模糊</string>
     <string name="editor_mode_pixelate">马赛克</string>
     <string name="editor_flip_horizontal">水平翻转</string>
@@ -657,4 +679,14 @@
     <string name="editor_reset_adjustments">重置</string>
     <string name="editor_resize_title">调整图像尺寸</string>
     <string name="editor_apply">应用</string>
+    <string name="editor_resize_tab_dimensions">按尺寸</string>
+    <string name="editor_resize_tab_percentage">按比例</string>
+    <string name="editor_resize_tab_filesize">按文件大小</string>
+    <string name="editor_resize_target_size">目标文件大小</string>
+    <string name="editor_resize_target_size_hint">最大大小（如 500）</string>
+    <string name="editor_resize_target_desc">自动调整分辨率和画质以控制文件体积</string>
+    <string name="editor_resize_kb">KB</string>
+    <string name="editor_resize_mb">MB</string>
+    <string name="editor_resize_scale">比例：%1$d%%</string>
+    <string name="editor_resize_result">结果：%1$d × %2$d 像素</string>
 </resources>

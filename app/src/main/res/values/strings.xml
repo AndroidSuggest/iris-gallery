@@ -382,6 +382,21 @@
     <string name="settings_album_count_desc">Display item numbers under album names</string>
 
     <string name="settings_section_viewer">Viewer &amp; Playback</string>
+    <string name="settings_viewer_header_title">Viewer header</string>
+    <string name="settings_viewer_header_desc">Customize the primary and secondary text at the top of the viewer</string>
+    <string name="settings_viewer_header_style_date">Date on top</string>
+    <string name="settings_viewer_header_style_date_desc">Capture date on top line, title or filename below</string>
+    <string name="settings_viewer_header_style_title">Title or filename on top</string>
+    <string name="settings_viewer_header_style_title_desc">Custom title or filename on top line, date below</string>
+    <string name="settings_viewer_header_style_filename">Filename on top</string>
+    <string name="settings_viewer_header_style_filename_desc">Always show filename on top line, date below</string>
+    <string name="settings_viewer_header_style_adaptive">Adaptive (Title first)</string>
+    <string name="settings_viewer_header_style_adaptive_desc">Show title on top if available, otherwise date</string>
+    <string name="settings_viewer_show_page_count_title">Show position count</string>
+    <string name="settings_viewer_show_page_count_desc">Display current item index and total count (e.g. 1 / 45)</string>
+    <string name="settings_viewer_show_time_title">Include capture time</string>
+    <string name="settings_viewer_show_time_desc">Show time of day alongside the date</string>
+    <string name="settings_viewer_header_preview">Live Preview</string>
     <string name="settings_autoplay_video_title">Autoplay videos</string>
     <string name="settings_autoplay_video_desc">Automatically start playback when opening videos in the viewer</string>
     <string name="settings_loop_video_title">Loop videos</string>
@@ -657,7 +672,14 @@
     <string name="editor_category_markup">Markup</string>
     <string name="editor_category_effects">Privacy</string>
     <string name="editor_mode_draw">Brush</string>
+    <string name="editor_mode_shape">Shapes</string>
     <string name="editor_mode_text">Text</string>
+    <string name="editor_shape_rect">Rectangle</string>
+    <string name="editor_shape_oval">Circle</string>
+    <string name="editor_shape_arrow">Arrow</string>
+    <string name="editor_shape_line">Line</string>
+    <string name="editor_shape_outline">Outline</string>
+    <string name="editor_shape_fill">Fill</string>
     <string name="editor_mode_blur">Blur</string>
     <string name="editor_mode_pixelate">Pixelate</string>
     <string name="editor_flip_horizontal">Flip horizontal</string>
@@ -666,4 +688,14 @@
     <string name="editor_reset_adjustments">Reset</string>
     <string name="editor_resize_title">Resize Image</string>
     <string name="editor_apply">Apply</string>
+    <string name="editor_resize_tab_dimensions">Dimensions</string>
+    <string name="editor_resize_tab_percentage">Percentage</string>
+    <string name="editor_resize_tab_filesize">File Size</string>
+    <string name="editor_resize_target_size">Target File Size</string>
+    <string name="editor_resize_target_size_hint">Max size (e.g. 500)</string>
+    <string name="editor_resize_target_desc">Automatically adjusts resolution and quality to fit under the target limit</string>
+    <string name="editor_resize_kb">KB</string>
+    <string name="editor_resize_mb">MB</string>
+    <string name="editor_resize_scale">Scale: %1$d%%</string>
+    <string name="editor_resize_result">Result: %1$d × %2$d px</string>
 </resources>

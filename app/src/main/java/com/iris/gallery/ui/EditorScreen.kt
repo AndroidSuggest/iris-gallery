@@ -3,6 +3,7 @@ package com.iris.gallery.ui
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import com.iris.gallery.data.LibraryPreferences
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -46,6 +47,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.Redo
 import androidx.compose.material.icons.automirrored.outlined.RotateLeft
 import androidx.compose.material.icons.automirrored.outlined.RotateRight
@@ -54,12 +56,15 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material.icons.outlined.BrightnessMedium
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.outlined.CropRotate
+import androidx.compose.material.icons.outlined.CropSquare
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Draw
+import androidx.compose.material.icons.outlined.HorizontalRule
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Tune
@@ -98,6 +103,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.iris.gallery.R
@@ -119,6 +125,7 @@ enum class EditorCategory {
 
 enum class MarkupSubMode {
     BRUSH,
+    SHAPES,
     TEXT
 }
 
@@ -153,6 +160,9 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
     var drawColor by remember { mutableIntStateOf(android.graphics.Color.parseColor("#F44336")) }
     var drawBrushSize by remember { mutableFloatStateOf(0.015f) }
     var drawErasing by remember { mutableStateOf(false) }
+    var shapeType by remember { mutableStateOf(ShapeType.RECTANGLE) }
+    var shapeFilled by remember { mutableStateOf(false) }
+    var shapeStrokeSize by remember { mutableFloatStateOf(0.012f) }
     var selectedOverlay by remember { mutableStateOf<TextOverlay?>(null) }
     var cropPreset by remember { mutableStateOf("Manual") }
 
@@ -161,6 +171,7 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
     var resizeWidth by remember(image.id, rotation) { mutableStateOf(baseWidth.toString()) }
     var resizeHeight by remember(image.id, rotation) { mutableStateOf(baseHeight.toString()) }
     var isCustomResized by remember(image.id, rotation) { mutableStateOf(false) }
+    var targetMaxBytes by remember(image.id, rotation) { mutableStateOf<Long?>(null) }
     var lockAspect by remember { mutableStateOf(true) }
     var showResizeDialog by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
@@ -168,7 +179,11 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
     val activeTool = when (category) {
         EditorCategory.TRANSFORM -> EditorTool.CROP
         EditorCategory.ADJUST -> EditorTool.ADJUST
-        EditorCategory.MARKUP -> if (markupSubMode == MarkupSubMode.BRUSH) EditorTool.DRAW else EditorTool.TEXT
+        EditorCategory.MARKUP -> when (markupSubMode) {
+            MarkupSubMode.BRUSH -> EditorTool.DRAW
+            MarkupSubMode.SHAPES -> EditorTool.SHAPE
+            MarkupSubMode.TEXT -> EditorTool.TEXT
+        }
         EditorCategory.PRIVACY -> if (privacySubMode == PrivacySubMode.BLUR) EditorTool.BLUR else EditorTool.PIXELATE
     }
 
@@ -238,7 +253,8 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
                                             if (isCustomResized) resizeWidth.toIntOrNull() else null,
                                             if (isCustomResized) resizeHeight.toIntOrNull() else null,
                                             strokes,
-                                            textOverlays
+                                            textOverlays,
+                                            targetMaxBytes = if (isCustomResized) targetMaxBytes else null
                                         )
                                     }.isSuccess
                                     saving = false
@@ -320,10 +336,16 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
                         update = { view ->
                             view.setSource(transformedPreview)
                             view.tool = activeTool
-                            view.brushRadius = if (activeTool == EditorTool.DRAW) drawBrushSize else brushSize
+                            view.brushRadius = when (activeTool) {
+                                EditorTool.DRAW -> drawBrushSize
+                                EditorTool.SHAPE -> shapeStrokeSize
+                                else -> brushSize
+                            }
                             view.brushColor = drawColor
+                            view.currentShapeType = shapeType
+                            view.shapeFilled = shapeFilled
                             view.effectStrength = strength.toInt()
-                            view.erasing = if (activeTool == EditorTool.DRAW) drawErasing else erasing
+                            view.erasing = if (activeTool == EditorTool.DRAW || activeTool == EditorTool.SHAPE) drawErasing else erasing
                             view.colorFilter = androidFilter
                         },
                         modifier = Modifier.fillMaxSize()
@@ -406,6 +428,12 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
                                     onUndo = { editorView?.undoStroke() },
                                     onRedo = { editorView?.redoStroke() },
                                     onClear = { editorView?.clearStrokes() },
+                                    shapeType = shapeType,
+                                    onShapeTypeChange = { shapeType = it },
+                                    shapeFilled = shapeFilled,
+                                    onShapeFilledChange = { shapeFilled = it },
+                                    shapeStrokeSize = shapeStrokeSize,
+                                    onShapeStrokeSizeChange = { shapeStrokeSize = it },
                                     selectedOverlay = selectedOverlay,
                                     onAddOrUpdateText = { text, color, bg, size ->
                                         if (selectedOverlay != null) {
@@ -458,16 +486,18 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
             currentHeight = resizeHeight,
             lockAspect = lockAspect,
             onDismiss = { showResizeDialog = false },
-            onApply = { w, h ->
+            onApply = { w, h, maxBytes ->
                 isCustomResized = true
                 resizeWidth = w
                 resizeHeight = h
+                targetMaxBytes = maxBytes
                 showResizeDialog = false
             },
             onReset = {
                 isCustomResized = false
                 resizeWidth = baseWidth.toString()
                 resizeHeight = baseHeight.toString()
+                targetMaxBytes = null
                 showResizeDialog = false
             }
         )
@@ -682,6 +712,12 @@ private fun MarkupControls(
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onClear: () -> Unit,
+    shapeType: ShapeType,
+    onShapeTypeChange: (ShapeType) -> Unit,
+    shapeFilled: Boolean,
+    onShapeFilledChange: (Boolean) -> Unit,
+    shapeStrokeSize: Float,
+    onShapeStrokeSizeChange: (Float) -> Unit,
     selectedOverlay: TextOverlay?,
     onAddOrUpdateText: (String, Int, Int, Float) -> Unit,
     onDeleteText: () -> Unit,
@@ -700,6 +736,12 @@ private fun MarkupControls(
             modifier = Modifier.weight(1f)
         )
         FilterChip(
+            selected = subMode == MarkupSubMode.SHAPES,
+            onClick = { onSubModeChange(MarkupSubMode.SHAPES) },
+            label = { Text(stringResource(R.string.editor_mode_shape)) },
+            modifier = Modifier.weight(1f)
+        )
+        FilterChip(
             selected = subMode == MarkupSubMode.TEXT,
             onClick = { onSubModeChange(MarkupSubMode.TEXT) },
             label = { Text(stringResource(R.string.editor_mode_text)) },
@@ -707,26 +749,46 @@ private fun MarkupControls(
         )
     }
 
-    if (subMode == MarkupSubMode.BRUSH) {
-        DrawControls(
-            brushSize = brushSize,
-            brushColor = brushColor,
-            erasing = erasing,
-            onSize = onSize,
-            onColor = onColor,
-            onErase = onErase,
-            onUndo = onUndo,
-            onRedo = onRedo,
-            onClear = onClear
-        )
-    } else {
-        TextControls(
-            selectedOverlay = selectedOverlay,
-            onAddOrUpdateText = onAddOrUpdateText,
-            onDeleteText = onDeleteText,
-            onClearAllText = onClearAllText,
-            onDeselect = onDeselect
-        )
+    when (subMode) {
+        MarkupSubMode.BRUSH -> {
+            DrawControls(
+                brushSize = brushSize,
+                brushColor = brushColor,
+                erasing = erasing,
+                onSize = onSize,
+                onColor = onColor,
+                onErase = onErase,
+                onUndo = onUndo,
+                onRedo = onRedo,
+                onClear = onClear
+            )
+        }
+        MarkupSubMode.SHAPES -> {
+            ShapeControls(
+                shapeType = shapeType,
+                onShapeTypeChange = onShapeTypeChange,
+                shapeFilled = shapeFilled,
+                onShapeFilledChange = onShapeFilledChange,
+                strokeSize = shapeStrokeSize,
+                onSize = onShapeStrokeSizeChange,
+                color = brushColor,
+                onColor = onColor,
+                erasing = erasing,
+                onErase = onErase,
+                onUndo = onUndo,
+                onRedo = onRedo,
+                onClear = onClear
+            )
+        }
+        MarkupSubMode.TEXT -> {
+            TextControls(
+                selectedOverlay = selectedOverlay,
+                onAddOrUpdateText = onAddOrUpdateText,
+                onDeleteText = onDeleteText,
+                onClearAllText = onClearAllText,
+                onDeselect = onDeselect
+            )
+        }
     }
 }
 
@@ -786,61 +848,171 @@ private fun ResizeDialog(
     currentHeight: String,
     lockAspect: Boolean,
     onDismiss: () -> Unit,
-    onApply: (String, String) -> Unit,
+    onApply: (String, String, Long?) -> Unit,
     onReset: () -> Unit
 ) {
+    var selectedMode by remember { mutableIntStateOf(0) }
     var width by remember { mutableStateOf(currentWidth) }
     var height by remember { mutableStateOf(currentHeight) }
     var locked by remember { mutableStateOf(lockAspect) }
+
+    var percentage by remember { mutableFloatStateOf(100f) }
+
+    var targetSizeInput by remember { mutableStateOf("") }
+    var isMb by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.editor_resize_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
                 ) {
-                    OutlinedTextField(
-                        value = width,
-                        onValueChange = { value ->
-                            val clean = value.filter(Char::isDigit)
-                            width = clean
-                            if (locked && baseWidth > 0) {
-                                clean.toIntOrNull()?.let {
-                                    height = (it * baseHeight.toFloat() / baseWidth).toInt().toString()
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        label = { Text(stringResource(R.string.editor_width_px)) },
-                        singleLine = true
+                    FilterChip(
+                        selected = selectedMode == 0,
+                        onClick = { selectedMode = 0 },
+                        label = { Text(stringResource(R.string.editor_resize_tab_dimensions), maxLines = 1) }
                     )
-                    Text("×")
-                    OutlinedTextField(
-                        value = height,
-                        onValueChange = { value ->
-                            val clean = value.filter(Char::isDigit)
-                            height = clean
-                            if (locked && baseHeight > 0) {
-                                clean.toIntOrNull()?.let {
-                                    width = (it * baseWidth.toFloat() / baseHeight).toInt().toString()
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        label = { Text(stringResource(R.string.editor_height_px)) },
-                        singleLine = true
+                    FilterChip(
+                        selected = selectedMode == 1,
+                        onClick = { selectedMode = 1 },
+                        label = { Text(stringResource(R.string.editor_resize_tab_percentage), maxLines = 1) }
+                    )
+                    FilterChip(
+                        selected = selectedMode == 2,
+                        onClick = { selectedMode = 2 },
+                        label = { Text(stringResource(R.string.editor_resize_tab_filesize), maxLines = 1) }
                     )
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Switch(checked = locked, onCheckedChange = { locked = it })
-                    Text(stringResource(R.string.editor_lock_aspect), style = MaterialTheme.typography.bodyMedium)
+
+                when (selectedMode) {
+                    0 -> {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = width,
+                                onValueChange = { value ->
+                                    val clean = value.filter(Char::isDigit)
+                                    width = clean
+                                    if (locked && baseWidth > 0) {
+                                        clean.toIntOrNull()?.let {
+                                            height = (it * baseHeight.toFloat() / baseWidth).toInt().toString()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                label = { Text(stringResource(R.string.editor_width_px)) },
+                                singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                            )
+                            Text("×")
+                            OutlinedTextField(
+                                value = height,
+                                onValueChange = { value ->
+                                    val clean = value.filter(Char::isDigit)
+                                    height = clean
+                                    if (locked && baseHeight > 0) {
+                                        clean.toIntOrNull()?.let {
+                                            width = (it * baseWidth.toFloat() / baseHeight).toInt().toString()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                label = { Text(stringResource(R.string.editor_height_px)) },
+                                singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Switch(checked = locked, onCheckedChange = { locked = it })
+                            Text(stringResource(R.string.editor_lock_aspect), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    1 -> {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            listOf(25f, 50f, 75f).forEach { pct ->
+                                FilterChip(
+                                    selected = percentage.toInt() == pct.toInt(),
+                                    onClick = {
+                                        percentage = pct
+                                        val factor = pct / 100f
+                                        width = (baseWidth * factor).toInt().coerceAtLeast(1).toString()
+                                        height = (baseHeight * factor).toInt().coerceAtLeast(1).toString()
+                                    },
+                                    label = { Text("${pct.toInt()}%") }
+                                )
+                            }
+                        }
+                        Text(
+                            text = stringResource(R.string.editor_resize_scale, percentage.toInt()),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Slider(
+                            value = percentage,
+                            onValueChange = { pct ->
+                                percentage = pct
+                                val factor = pct / 100f
+                                width = (baseWidth * factor).toInt().coerceAtLeast(1).toString()
+                                height = (baseHeight * factor).toInt().coerceAtLeast(1).toString()
+                            },
+                            valueRange = 10f..100f,
+                            steps = 17,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = stringResource(R.string.editor_resize_result, width.toIntOrNull() ?: baseWidth, height.toIntOrNull() ?: baseHeight),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    2 -> {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = targetSizeInput,
+                                onValueChange = { v -> targetSizeInput = v.filter { c -> c.isDigit() || c == '.' } },
+                                modifier = Modifier.weight(1f),
+                                label = { Text(stringResource(R.string.editor_resize_target_size)) },
+                                placeholder = { Text(stringResource(R.string.editor_resize_target_size_hint)) },
+                                singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal)
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilterChip(
+                                    selected = !isMb,
+                                    onClick = { isMb = false },
+                                    label = { Text(stringResource(R.string.editor_resize_kb), maxLines = 1) }
+                                )
+                                FilterChip(
+                                    selected = isMb,
+                                    onClick = { isMb = true },
+                                    label = { Text(stringResource(R.string.editor_resize_mb), maxLines = 1) }
+                                )
+                            }
+                        }
+                        Text(
+                            text = stringResource(R.string.editor_resize_target_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
+
                 Text(
                     text = "${stringResource(R.string.editor_original)}: $baseWidth × $baseHeight px",
                     style = MaterialTheme.typography.bodySmall,
@@ -850,7 +1022,13 @@ private fun ResizeDialog(
         },
         confirmButton = {
             Button(onClick = {
-                onApply(width, height)
+                val targetBytes: Long? = if (selectedMode == 2) {
+                    val num = targetSizeInput.toDoubleOrNull()
+                    if (num != null && num > 0) {
+                        if (isMb) (num * 1024 * 1024).toLong() else (num * 1024).toLong()
+                    } else null
+                } else null
+                onApply(width, height, targetBytes)
             }) {
                 Text(stringResource(R.string.editor_apply))
             }
@@ -860,6 +1038,8 @@ private fun ResizeDialog(
                 TextButton(onClick = {
                     width = baseWidth.toString()
                     height = baseHeight.toString()
+                    percentage = 100f
+                    targetSizeInput = ""
                     onReset()
                 }) {
                     Text(stringResource(R.string.editor_original))
@@ -987,6 +1167,169 @@ private fun DrawControls(
                 contentAlignment = Alignment.Center
             ) {
                 if (brushColor == c && !erasing) {
+                    val checkColor = if (c == android.graphics.Color.WHITE || c == android.graphics.Color.parseColor("#FFEB3B")) Color.Black else Color.White
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = checkColor,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(top = 4.dp)
+    ) {
+        FilterChip(
+            selected = erasing,
+            onClick = { onErase(!erasing) },
+            label = {
+                Text(
+                    if (erasing) stringResource(R.string.editor_eraser_on)
+                    else stringResource(R.string.editor_erase)
+                )
+            }
+        )
+        IconButton(onClick = onUndo) {
+            Icon(Icons.AutoMirrored.Outlined.Undo, stringResource(R.string.editor_undo_stroke))
+        }
+        IconButton(onClick = onRedo) {
+            Icon(Icons.AutoMirrored.Outlined.Redo, stringResource(R.string.editor_redo_stroke))
+        }
+        IconButton(onClick = onClear) {
+            Icon(Icons.Outlined.DeleteSweep, stringResource(R.string.editor_clear_effects))
+        }
+    }
+}
+
+@Composable
+private fun ShapeControls(
+    shapeType: ShapeType,
+    onShapeTypeChange: (ShapeType) -> Unit,
+    shapeFilled: Boolean,
+    onShapeFilledChange: (Boolean) -> Unit,
+    strokeSize: Float,
+    onSize: (Float) -> Unit,
+    color: Int,
+    onColor: (Int) -> Unit,
+    erasing: Boolean,
+    onErase: (Boolean) -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onClear: () -> Unit
+) {
+    val colors = remember {
+        listOf(
+            android.graphics.Color.WHITE,
+            android.graphics.Color.BLACK,
+            android.graphics.Color.parseColor("#F44336"),
+            android.graphics.Color.parseColor("#FF9800"),
+            android.graphics.Color.parseColor("#FFEB3B"),
+            android.graphics.Color.parseColor("#4CAF50"),
+            android.graphics.Color.parseColor("#00BCD4"),
+            android.graphics.Color.parseColor("#2196F3"),
+            android.graphics.Color.parseColor("#9C27B0"),
+            android.graphics.Color.parseColor("#E91E63"),
+        )
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilterChip(
+            selected = shapeType == ShapeType.RECTANGLE,
+            onClick = { onShapeTypeChange(ShapeType.RECTANGLE) },
+            leadingIcon = {
+                Icon(Icons.Outlined.CropSquare, contentDescription = null, modifier = Modifier.size(18.dp))
+            },
+            label = { Text(stringResource(R.string.editor_shape_rect)) }
+        )
+        FilterChip(
+            selected = shapeType == ShapeType.OVAL,
+            onClick = { onShapeTypeChange(ShapeType.OVAL) },
+            leadingIcon = {
+                Icon(Icons.Outlined.Circle, contentDescription = null, modifier = Modifier.size(18.dp))
+            },
+            label = { Text(stringResource(R.string.editor_shape_oval)) }
+        )
+        FilterChip(
+            selected = shapeType == ShapeType.ARROW,
+            onClick = { onShapeTypeChange(ShapeType.ARROW) },
+            leadingIcon = {
+                Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+            },
+            label = { Text(stringResource(R.string.editor_shape_arrow)) }
+        )
+        FilterChip(
+            selected = shapeType == ShapeType.LINE,
+            onClick = { onShapeTypeChange(ShapeType.LINE) },
+            leadingIcon = {
+                Icon(Icons.Outlined.HorizontalRule, contentDescription = null, modifier = Modifier.size(18.dp))
+            },
+            label = { Text(stringResource(R.string.editor_shape_line)) }
+        )
+
+        if (shapeType == ShapeType.RECTANGLE || shapeType == ShapeType.OVAL) {
+            Spacer(Modifier.width(4.dp))
+            FilterChip(
+                selected = !shapeFilled,
+                onClick = { onShapeFilledChange(false) },
+                label = { Text(stringResource(R.string.editor_shape_outline)) }
+            )
+            FilterChip(
+                selected = shapeFilled,
+                onClick = { onShapeFilledChange(true) },
+                label = { Text(stringResource(R.string.editor_shape_fill)) }
+            )
+        }
+    }
+
+    if (!shapeFilled || (shapeType == ShapeType.ARROW || shapeType == ShapeType.LINE)) {
+        Text(
+            stringResource(R.string.editor_brush_size, (strokeSize * 1000).toInt()),
+            style = MaterialTheme.typography.titleSmall
+        )
+        Slider(strokeSize, onSize, valueRange = 0.005f..0.045f)
+    }
+
+    Text(
+        stringResource(R.string.editor_draw_color),
+        style = MaterialTheme.typography.titleSmall
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        colors.forEach { c ->
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(Color(c), CircleShape)
+                    .then(
+                        if (color == c && !erasing) {
+                            Modifier.border(2.5.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                        } else {
+                            Modifier.border(1.dp, Color.Gray.copy(alpha = 0.4f), CircleShape)
+                        }
+                    )
+                    .clickable {
+                        onColor(c)
+                        if (erasing) onErase(false)
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (color == c && !erasing) {
                     val checkColor = if (c == android.graphics.Color.WHITE || c == android.graphics.Color.parseColor("#FFEB3B")) Color.Black else Color.White
                     Icon(
                         Icons.Filled.Check,
@@ -1268,7 +1611,8 @@ private suspend fun saveEditedCopy(
     requestedWidth: Int?,
     requestedHeight: Int?,
     strokes: List<BrushStroke>,
-    textOverlays: List<TextOverlay>
+    textOverlays: List<TextOverlay>,
+    targetMaxBytes: Long? = null
 ) = withContext(Dispatchers.IO) {
     val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
     val rawSource = runCatching {
@@ -1344,19 +1688,61 @@ private suspend fun saveEditedCopy(
     renderTextOverlays(resized, textOverlays, crop)
     val nowMs = System.currentTimeMillis()
     val nowSec = nowMs / 1000L
+    val effectiveTitle = image.title.takeIf { it.isNotBlank() && it != image.name && it != image.name.substringBeforeLast('.') }
     val values = ContentValues().apply {
         put(MediaStore.Images.Media.DISPLAY_NAME, image.name.substringBeforeLast('.') + "_iris.jpg")
         put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
         put(MediaStore.Images.Media.DATE_ADDED, nowSec)
         put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
         put(MediaStore.Images.Media.DATE_TAKEN, nowMs)
+        if (effectiveTitle != null) {
+            put(MediaStore.Images.Media.TITLE, effectiveTitle)
+        }
         if (Build.VERSION.SDK_INT >= 29) {
             put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Iris")
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
     }
     val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("Could not create copy")
-    context.contentResolver.openOutputStream(uri)?.use { resized.compress(Bitmap.CompressFormat.JPEG, 94, it) } ?: error("Could not write copy")
+    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+        if (targetMaxBytes != null && targetMaxBytes > 0) {
+            var quality = 92
+            val bos = java.io.ByteArrayOutputStream()
+            var fits = false
+            while (!fits && quality >= 25) {
+                bos.reset()
+                resized.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+                if (bos.size() <= targetMaxBytes) {
+                    fits = true
+                    break
+                }
+                quality -= 10
+            }
+            if (!fits) {
+                var scale = 0.85f
+                while (!fits && scale >= 0.15f) {
+                    val sw = (resized.width * scale).toInt().coerceAtLeast(64)
+                    val sh = (resized.height * scale).toInt().coerceAtLeast(64)
+                    val scaled = Bitmap.createScaledBitmap(resized, sw, sh, true)
+                    quality = 85
+                    while (!fits && quality >= 30) {
+                        bos.reset()
+                        scaled.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+                        if (bos.size() <= targetMaxBytes) {
+                            fits = true
+                            break
+                        }
+                        quality -= 15
+                    }
+                    if (scaled !== resized) scaled.recycle()
+                    scale -= 0.15f
+                }
+            }
+            outputStream.write(bos.toByteArray())
+        } else {
+            resized.compress(Bitmap.CompressFormat.JPEG, 94, outputStream)
+        }
+    } ?: error("Could not write copy")
     copyExifMetadata(context, image, uri)
     if (Build.VERSION.SDK_INT >= 29) {
         val updateValues = ContentValues().apply {
@@ -1364,8 +1750,17 @@ private suspend fun saveEditedCopy(
             put(MediaStore.Images.Media.DATE_ADDED, nowSec)
             put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
             put(MediaStore.Images.Media.DATE_TAKEN, nowMs)
+            if (effectiveTitle != null) {
+                put(MediaStore.Images.Media.TITLE, effectiveTitle)
+            }
         }
         context.contentResolver.update(uri, updateValues, null, null)
+    }
+    val newId = uri.lastPathSegment?.toLongOrNull()
+    if (newId != null && effectiveTitle != null) {
+        runCatching {
+            LibraryPreferences(context).setCustomTitle(newId, effectiveTitle)
+        }
     }
     if (source !== cropped) source.recycle()
     if (cropped !== adjusted) cropped.recycle()
@@ -1409,6 +1804,9 @@ private fun copyExifMetadata(context: Context, sourceImage: MediaImage, destUri:
                 ExifInterface.TAG_USER_COMMENT,
                 ExifInterface.TAG_ARTIST,
                 ExifInterface.TAG_COPYRIGHT,
+                "DocumentName",
+                "XPTitle",
+                "XPComment",
                 ExifInterface.TAG_GPS_LATITUDE,
                 ExifInterface.TAG_GPS_LATITUDE_REF,
                 ExifInterface.TAG_GPS_LONGITUDE,
@@ -1426,6 +1824,11 @@ private fun copyExifMetadata(context: Context, sourceImage: MediaImage, destUri:
                     dstExif.setAttribute(tag, value)
                 }
             }
+            val effectiveTitle = sourceImage.title.takeIf { it.isNotBlank() && it != sourceImage.name && it != sourceImage.name.substringBeforeLast('.') }
+            if (effectiveTitle != null) {
+                dstExif.setAttribute("DocumentName", effectiveTitle)
+                dstExif.setAttribute("XPTitle", effectiveTitle)
+            }
             dstExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             dstExif.setAttribute(ExifInterface.TAG_SOFTWARE, "Iris Gallery")
             dstExif.saveAttributes()
@@ -1437,6 +1840,17 @@ private fun renderBrushes(target: Bitmap, strokes: List<BrushStroke>, crop: Rect
     if (strokes.isEmpty()) return
     val canvas = Canvas(target)
     strokes.forEach { stroke ->
+        if (stroke.shape != ShapeType.NONE && stroke.points.size >= 2) {
+            val p1 = stroke.points.first()
+            val p2 = stroke.points.last()
+            val x1 = (p1.x - crop.left) / crop.width() * target.width
+            val y1 = (p1.y - crop.top) / crop.height() * target.height
+            val x2 = (p2.x - crop.left) / crop.width() * target.width
+            val y2 = (p2.y - crop.top) / crop.height() * target.height
+            val strokeWidth = stroke.radius / crop.width() * target.width
+            renderShape(canvas, stroke, x1, y1, x2, y2, strokeWidth)
+            return@forEach
+        }
         if (stroke.effect == BrushEffect.COLOR) {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE

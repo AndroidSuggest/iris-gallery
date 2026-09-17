@@ -11,6 +11,16 @@ import coil3.gif.GifDecoder
 import com.iris.gallery.decoder.AvifCoilDecoder
 
 class IrisApplication : Application(), SingletonImageLoader.Factory {
+    companion object {
+        lateinit var instance: IrisApplication
+            private set
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         return ImageLoader.Builder(context)
             .components {

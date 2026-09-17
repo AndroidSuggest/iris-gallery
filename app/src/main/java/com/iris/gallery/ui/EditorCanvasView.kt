@@ -15,13 +15,20 @@ import android.view.MotionEvent
 import android.view.View
 import kotlin.math.hypot
 
-enum class EditorTool { ADJUST, CROP, TRANSFORM, RESIZE, DRAW, TEXT, PIXELATE, BLUR }
+enum class EditorTool { ADJUST, CROP, TRANSFORM, RESIZE, DRAW, SHAPE, TEXT, PIXELATE, BLUR }
 enum class BrushEffect { PIXELATE, BLUR, COLOR }
+enum class ShapeType { NONE, RECTANGLE, OVAL, ARROW, LINE }
 
 data class BrushPoint(val x: Float, val y: Float)
-data class BrushStroke(val effect: BrushEffect, val radius: Float, val strength: Int,
+data class BrushStroke(
+    val effect: BrushEffect,
+    val radius: Float,
+    val strength: Int,
     val points: MutableList<BrushPoint> = mutableListOf(),
-    val color: Int = android.graphics.Color.RED)
+    val color: Int = android.graphics.Color.RED,
+    val shape: ShapeType = ShapeType.NONE,
+    val filled: Boolean = false
+)
 
 data class TextOverlay(
     val id: Long = System.currentTimeMillis() + (0..10000).random(),
@@ -44,6 +51,8 @@ class EditorCanvasView(context: Context) : View(context) {
     var tool = EditorTool.ADJUST; set(value) { field = value; invalidate() }
     var brushRadius = .06f
     var brushColor = android.graphics.Color.RED
+    var currentShapeType: ShapeType = ShapeType.RECTANGLE; set(value) { field = value; invalidate() }
+    var shapeFilled: Boolean = false; set(value) { field = value; invalidate() }
     var effectStrength = 18; set(value) { if (field != value) { field = value; rebuildEffects() } }
     var erasing = false
     var selectedTextId: Long? = null; set(value) { field = value; invalidate() }
@@ -134,6 +143,17 @@ class EditorCanvasView(context: Context) : View(context) {
     }
 
     private fun drawStroke(canvas: Canvas, stroke: BrushStroke) {
+        if (stroke.shape != ShapeType.NONE && stroke.points.size >= 2) {
+            val p1 = stroke.points.first()
+            val p2 = stroke.points.last()
+            val x1 = destination.left + (p1.x - visibleLeft()) / visibleWidth() * destination.width()
+            val y1 = destination.top + (p1.y - visibleTop()) / visibleHeight() * destination.height()
+            val x2 = destination.left + (p2.x - visibleLeft()) / visibleWidth() * destination.width()
+            val y2 = destination.top + (p2.y - visibleTop()) / visibleHeight() * destination.height()
+            val strokeWidth = stroke.radius * destination.width()
+            renderShape(canvas, stroke, x1, y1, x2, y2, strokeWidth)
+            return
+        }
         val path = Path()
         stroke.points.forEachIndexed { index, point ->
             val vx = destination.left + (point.x - visibleLeft()) / visibleWidth() * destination.width()
@@ -260,12 +280,14 @@ class EditorCanvasView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (tool != EditorTool.CROP && tool != EditorTool.PIXELATE && tool != EditorTool.BLUR && tool != EditorTool.DRAW && tool != EditorTool.TEXT) return super.onTouchEvent(event)
+        if (tool != EditorTool.CROP && tool != EditorTool.PIXELATE && tool != EditorTool.BLUR &&
+            tool != EditorTool.DRAW && tool != EditorTool.SHAPE && tool != EditorTool.TEXT) return super.onTouchEvent(event)
         if (event.action == MotionEvent.ACTION_DOWN && !destination.contains(event.x, event.y)) return true
         val point = viewToNormalized(event.x, event.y)
         when (tool) {
             EditorTool.CROP -> handleCropTouch(event, point)
             EditorTool.PIXELATE, EditorTool.BLUR, EditorTool.DRAW -> handleBrushTouch(event, point)
+            EditorTool.SHAPE -> handleShapeTouch(event, point)
             EditorTool.TEXT -> handleTextTouch(event, point)
             else -> {}
         }
@@ -275,7 +297,9 @@ class EditorCanvasView(context: Context) : View(context) {
     private fun handleBrushTouch(event: MotionEvent, point: BrushPoint) {
         if (erasing) {
             if (event.action != MotionEvent.ACTION_UP) {
-                val changed = session.strokes.removeAll { stroke -> stroke.points.any { hypot(it.x - point.x, it.y - point.y) < brushRadius } }
+                val changed = session.strokes.removeAll { stroke ->
+                    isPointNearStrokeOrShape(point, stroke, brushRadius)
+                }
                 if (changed) { redoStrokes.clear(); rebuildComposite() }
                 invalidate()
             }
@@ -300,6 +324,54 @@ class EditorCanvasView(context: Context) : View(context) {
             MotionEvent.ACTION_MOVE -> activeStroke?.points?.add(point)
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> activeStroke?.let { session.strokes.add(it) }.also {
                 activeStroke = null; rebuildComposite(); rebuildEffects()
+            }
+        }
+        invalidate()
+    }
+
+    private fun handleShapeTouch(event: MotionEvent, point: BrushPoint) {
+        if (erasing) {
+            if (event.action != MotionEvent.ACTION_UP) {
+                val changed = session.strokes.removeAll { stroke ->
+                    isPointNearStrokeOrShape(point, stroke, brushRadius)
+                }
+                if (changed) { redoStrokes.clear(); rebuildComposite() }
+                invalidate()
+            }
+            return
+        }
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                redoStrokes.clear()
+                activeStroke = BrushStroke(
+                    effect = BrushEffect.COLOR,
+                    radius = brushRadius,
+                    strength = 0,
+                    points = mutableListOf(point, point),
+                    color = brushColor,
+                    shape = currentShapeType,
+                    filled = shapeFilled
+                )
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val stroke = activeStroke ?: return
+                if (stroke.points.size >= 2) {
+                    stroke.points[1] = point
+                } else {
+                    stroke.points.add(point)
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val stroke = activeStroke
+                if (stroke != null && stroke.points.size >= 2) {
+                    val p1 = stroke.points.first()
+                    val p2 = stroke.points.last()
+                    if (hypot(p2.x - p1.x, p2.y - p1.y) > 0.006f) {
+                        session.strokes.add(stroke)
+                    }
+                }
+                activeStroke = null
+                rebuildComposite()
             }
         }
         invalidate()
@@ -481,6 +553,17 @@ class EditorCanvasView(context: Context) : View(context) {
     }
 
     private fun applyStroke(target: Bitmap, stroke: BrushStroke) {
+        if (stroke.shape != ShapeType.NONE && stroke.points.size >= 2) {
+            val p1 = stroke.points.first()
+            val p2 = stroke.points.last()
+            val x1 = p1.x * target.width
+            val y1 = p1.y * target.height
+            val x2 = p2.x * target.width
+            val y2 = p2.y * target.height
+            val strokeWidth = stroke.radius * target.width
+            renderShape(Canvas(target), stroke, x1, y1, x2, y2, strokeWidth)
+            return
+        }
         if (stroke.effect == BrushEffect.COLOR) {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
@@ -555,4 +638,165 @@ private fun boxBlur(pixels: IntArray, width: Int, height: Int, radius: Int) {
             g+=(add shr 8 and 255)-(remove shr 8 and 255); b+=(add and 255)-(remove and 255)
         }
     }
+}
+
+internal fun renderShape(
+    canvas: Canvas,
+    stroke: BrushStroke,
+    x1: Float,
+    y1: Float,
+    x2: Float,
+    y2: Float,
+    strokeWidth: Float
+) {
+    val isFilled = stroke.filled && (stroke.shape == ShapeType.RECTANGLE || stroke.shape == ShapeType.OVAL)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = stroke.color
+        style = if (isFilled) Paint.Style.FILL else Paint.Style.STROKE
+        this.strokeWidth = strokeWidth
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    when (stroke.shape) {
+        ShapeType.RECTANGLE -> {
+            val left = minOf(x1, x2)
+            val top = minOf(y1, y2)
+            val right = maxOf(x1, x2)
+            val bottom = maxOf(y1, y2)
+            val rect = RectF(left, top, right, bottom)
+            val cornerRadius = (strokeWidth * 1.2f).coerceIn(4f, 32f)
+            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
+        }
+        ShapeType.OVAL -> {
+            val left = minOf(x1, x2)
+            val top = minOf(y1, y2)
+            val right = maxOf(x1, x2)
+            val bottom = maxOf(y1, y2)
+            val rect = RectF(left, top, right, bottom)
+            canvas.drawOval(rect, paint)
+        }
+        ShapeType.ARROW -> {
+            drawArrow(canvas, x1, y1, x2, y2, paint, strokeWidth)
+        }
+        ShapeType.LINE -> {
+            val linePaint = Paint(paint).apply {
+                style = Paint.Style.STROKE
+                this.strokeWidth = strokeWidth
+                strokeCap = Paint.Cap.ROUND
+            }
+            canvas.drawLine(x1, y1, x2, y2, linePaint)
+        }
+        else -> {}
+    }
+}
+
+internal fun drawArrow(
+    canvas: Canvas,
+    x1: Float,
+    y1: Float,
+    x2: Float,
+    y2: Float,
+    paint: Paint,
+    strokeWidth: Float
+) {
+    val dx = (x2 - x1).toDouble()
+    val dy = (y2 - y1).toDouble()
+    val length = kotlin.math.hypot(dx, dy)
+    if (length < 2f) return
+
+    val angle = kotlin.math.atan2(dy, dx)
+    val headSize = (strokeWidth * 4f).coerceIn(16f, (length * 0.45).toFloat())
+    val arrowAngle = Math.toRadians(28.0)
+
+    val tipX = x2
+    val tipY = y2
+
+    val shaftEndX = (tipX - (headSize * 0.7f * kotlin.math.cos(angle)).toFloat())
+    val shaftEndY = (tipY - (headSize * 0.7f * kotlin.math.sin(angle)).toFloat())
+
+    val linePaint = Paint(paint).apply {
+        style = Paint.Style.STROKE
+        this.strokeWidth = strokeWidth
+        strokeCap = Paint.Cap.ROUND
+    }
+    canvas.drawLine(x1, y1, shaftEndX, shaftEndY, linePaint)
+
+    val wing1X = tipX - headSize * kotlin.math.cos(angle - arrowAngle).toFloat()
+    val wing1Y = tipY - headSize * kotlin.math.sin(angle - arrowAngle).toFloat()
+    val wing2X = tipX - headSize * kotlin.math.cos(angle + arrowAngle).toFloat()
+    val wing2Y = tipY - headSize * kotlin.math.sin(angle + arrowAngle).toFloat()
+
+    val path = Path().apply {
+        moveTo(tipX, tipY)
+        lineTo(wing1X, wing1Y)
+        lineTo(shaftEndX, shaftEndY)
+        lineTo(wing2X, wing2Y)
+        close()
+    }
+    val headPaint = Paint(paint).apply {
+        style = Paint.Style.FILL_AND_STROKE
+        strokeJoin = Paint.Join.ROUND
+        this.strokeWidth = (strokeWidth * 0.4f).coerceAtLeast(1f)
+    }
+    canvas.drawPath(path, headPaint)
+}
+
+internal fun isPointNearStrokeOrShape(point: BrushPoint, stroke: BrushStroke, threshold: Float): Boolean {
+    if (stroke.shape == ShapeType.NONE) {
+        return stroke.points.any { hypot(it.x - point.x, it.y - point.y) < threshold }
+    }
+    if (stroke.points.size < 2) return false
+    val p1 = stroke.points.first()
+    val p2 = stroke.points.last()
+    val left = minOf(p1.x, p2.x) - threshold
+    val right = maxOf(p1.x, p2.x) + threshold
+    val top = minOf(p1.y, p2.y) - threshold
+    val bottom = maxOf(p1.y, p2.y) + threshold
+
+    if (point.x !in left..right || point.y !in top..bottom) return false
+
+    return when (stroke.shape) {
+        ShapeType.RECTANGLE -> {
+            if (stroke.filled) {
+                true
+            } else {
+                val minX = minOf(p1.x, p2.x)
+                val maxX = maxOf(p1.x, p2.x)
+                val minY = minOf(p1.y, p2.y)
+                val maxY = maxOf(p1.y, p2.y)
+                val nearHoriz = (kotlin.math.abs(point.y - minY) < threshold || kotlin.math.abs(point.y - maxY) < threshold) && point.x in (minX - threshold)..(maxX + threshold)
+                val nearVert = (kotlin.math.abs(point.x - minX) < threshold || kotlin.math.abs(point.x - maxX) < threshold) && point.y in (minY - threshold)..(maxY + threshold)
+                nearHoriz || nearVert
+            }
+        }
+        ShapeType.OVAL -> {
+            val cx = (p1.x + p2.x) / 2f
+            val cy = (p1.y + p2.y) / 2f
+            val rx = kotlin.math.abs(p2.x - p1.x) / 2f
+            val ry = kotlin.math.abs(p2.y - p1.y) / 2f
+            if (rx < 0.001f || ry < 0.001f) return false
+            val normDist = ((point.x - cx) * (point.x - cx)) / (rx * rx) + ((point.y - cy) * (point.y - cy)) / (ry * ry)
+            if (stroke.filled) {
+                normDist <= 1.0f
+            } else {
+                kotlin.math.abs(kotlin.math.sqrt(normDist) - 1.0f) < (threshold / minOf(rx, ry).coerceAtLeast(0.01f))
+            }
+        }
+        ShapeType.ARROW, ShapeType.LINE -> {
+            distToSegment(point.x, point.y, p1.x, p1.y, p2.x, p2.y) < threshold
+        }
+        else -> false
+    }
+}
+
+private fun distToSegment(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
+    val dx = x2 - x1
+    val dy = y2 - y1
+    val lenSq = dx * dx + dy * dy
+    if (lenSq < 1e-6f) return hypot(px - x1, py - y1)
+    val t = ((px - x1) * dx + (py - y1) * dy) / lenSq
+    val clampedT = t.coerceIn(0f, 1f)
+    val projX = x1 + clampedT * dx
+    val projY = y1 + clampedT * dy
+    return hypot(px - projX, py - projY)
 }

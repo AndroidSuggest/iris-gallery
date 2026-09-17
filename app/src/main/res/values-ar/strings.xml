@@ -302,6 +302,21 @@
     <string name="settings_album_count_desc">عرض عدد العناصر أسفل اسم كل ألبوم</string>
 
     <string name="settings_section_viewer">عارض الصور والتشغيل</string>
+    <string name="settings_viewer_header_title">ترويسة عارض الصور</string>
+    <string name="settings_viewer_header_desc">تخصيص النص الأساسي والثانوي في أعلى عارض الوسائط</string>
+    <string name="settings_viewer_header_style_date">التاريخ في الأعلى</string>
+    <string name="settings_viewer_header_style_date_desc">تاريخ الالتقاط في السطر الأول، والعنوان أو اسم الملف في الأسفل</string>
+    <string name="settings_viewer_header_style_title">العنوان أو اسم الملف في الأعلى</string>
+    <string name="settings_viewer_header_style_title_desc">العنوان المخصص أو اسم الملف في السطر الأول، والتاريخ في الأسفل</string>
+    <string name="settings_viewer_header_style_filename">اسم الملف في الأعلى</string>
+    <string name="settings_viewer_header_style_filename_desc">إظهار اسم الملف دائماً في السطر الأول، والتاريخ في الأسفل</string>
+    <string name="settings_viewer_header_style_adaptive">تلقائي (العنوان أولاً)</string>
+    <string name="settings_viewer_header_style_adaptive_desc">إظهار العنوان إن وُجد، وإلا إظهار تاريخ الالتقاط</string>
+    <string name="settings_viewer_show_page_count_title">إظهار عداد الموضع</string>
+    <string name="settings_viewer_show_page_count_desc">عرض رقم العنصر الحالي والإجمالي (مثال: 1 / 45)</string>
+    <string name="settings_viewer_show_time_title">تضمين وقت الالتقاط</string>
+    <string name="settings_viewer_show_time_desc">إظهار الوقت بجانب تاريخ الالتقاط</string>
+    <string name="settings_viewer_header_preview">معاينة مباشرة</string>
     <string name="settings_autoplay_video_title">تشغيل الفيديو تلقائياً</string>
     <string name="settings_autoplay_video_desc">بدء التشغيل فور فتح الفيديو في العارض</string>
     <string name="settings_loop_video_title">تكرار تشغيل الفيديو</string>
@@ -655,7 +670,14 @@
     <string name="editor_category_markup">رسم ونص</string>
     <string name="editor_category_effects">الخصوصية</string>
     <string name="editor_mode_draw">فرشاة</string>
+    <string name="editor_mode_shape">أشكال</string>
     <string name="editor_mode_text">نص</string>
+    <string name="editor_shape_rect">مستطيل</string>
+    <string name="editor_shape_oval">دائرة</string>
+    <string name="editor_shape_arrow">سهم</string>
+    <string name="editor_shape_line">خط</string>
+    <string name="editor_shape_outline">إطار</string>
+    <string name="editor_shape_fill">تعبئة</string>
     <string name="editor_mode_blur">تمويه</string>
     <string name="editor_mode_pixelate">بكسلة</string>
     <string name="editor_flip_horizontal">انعكاس أفقي</string>
@@ -664,4 +686,14 @@
     <string name="editor_reset_adjustments">إعادة ضبط</string>
     <string name="editor_resize_title">تغيير حجم الصورة</string>
     <string name="editor_apply">تطبيق</string>
+    <string name="editor_resize_tab_dimensions">الأبعاد</string>
+    <string name="editor_resize_tab_percentage">النسبة المئوية</string>
+    <string name="editor_resize_tab_filesize">حجم الملف</string>
+    <string name="editor_resize_target_size">حجم الملف المستهدف</string>
+    <string name="editor_resize_target_size_hint">الحد الأقصى (مثلاً 500)</string>
+    <string name="editor_resize_target_desc">يضبط الدقة وجودة الضغط تلقائياً للبقاء تحت الحد المحدد</string>
+    <string name="editor_resize_kb">ك.ب</string>
+    <string name="editor_resize_mb">م.ب</string>
+    <string name="editor_resize_scale">النسبة: %1$d%%</string>
+    <string name="editor_resize_result">النتيجة: %1$d × %2$d بكسل</string>
 </resources>

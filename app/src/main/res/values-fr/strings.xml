@@ -295,6 +295,21 @@
     <string name="settings_album_count_desc">Afficher le nombre d\'éléments sous le nom des albums</string>
 
     <string name="settings_section_viewer">Visionneuse et lecture</string>
+    <string name="settings_viewer_header_title">En-tête de la visionneuse</string>
+    <string name="settings_viewer_header_desc">Personnaliser les informations affichées en haut de la visionneuse</string>
+    <string name="settings_viewer_header_style_date">Date en haut</string>
+    <string name="settings_viewer_header_style_date_desc">Date de capture en haut, titre ou nom de fichier en dessous</string>
+    <string name="settings_viewer_header_style_title">Titre ou nom de fichier en haut</string>
+    <string name="settings_viewer_header_style_title_desc">Titre personnalisé ou nom de fichier en haut, date en dessous</string>
+    <string name="settings_viewer_header_style_filename">Nom de fichier en haut</string>
+    <string name="settings_viewer_header_style_filename_desc">Toujours afficher le nom de fichier en haut, date en dessous</string>
+    <string name="settings_viewer_header_style_adaptive">Adaptatif (titre d\'abord)</string>
+    <string name="settings_viewer_header_style_adaptive_desc">Afficher le titre si présent, sinon la date de capture</string>
+    <string name="settings_viewer_show_page_count_title">Afficher le compteur de position</string>
+    <string name="settings_viewer_show_page_count_desc">Afficher l\'indice de l\'élément et le total (ex. 1 / 45)</string>
+    <string name="settings_viewer_show_time_title">Inclure l\'heure de capture</string>
+    <string name="settings_viewer_show_time_desc">Afficher l\'heure de la journée à côté de la date</string>
+    <string name="settings_viewer_header_preview">Aperçu en direct</string>
     <string name="settings_autoplay_video_title">Lecture automatique des vidéos</string>
     <string name="settings_autoplay_video_desc">Lancer la lecture immédiatement à l\'ouverture d\'une vidéo</string>
     <string name="settings_loop_video_title">Lecture en boucle des vidéos</string>
@@ -655,7 +670,14 @@
     <string name="editor_category_markup">Annoter</string>
     <string name="editor_category_effects">Confidentialité</string>
     <string name="editor_mode_draw">Pinceau</string>
+    <string name="editor_mode_shape">Formes</string>
     <string name="editor_mode_text">Texte</string>
+    <string name="editor_shape_rect">Rectangle</string>
+    <string name="editor_shape_oval">Cercle</string>
+    <string name="editor_shape_arrow">Flèche</string>
+    <string name="editor_shape_line">Ligne</string>
+    <string name="editor_shape_outline">Contour</string>
+    <string name="editor_shape_fill">Remplir</string>
     <string name="editor_mode_blur">Flou</string>
     <string name="editor_mode_pixelate">Pixeliser</string>
     <string name="editor_flip_horizontal">Retourner horizontalement</string>
@@ -664,4 +686,14 @@
     <string name="editor_reset_adjustments">Réinitialiser</string>
     <string name="editor_resize_title">Redimensionner l\'image</string>
     <string name="editor_apply">Appliquer</string>
+    <string name="editor_resize_tab_dimensions">Dimensions</string>
+    <string name="editor_resize_tab_percentage">Pourcentage</string>
+    <string name="editor_resize_tab_filesize">Taille du fichier</string>
+    <string name="editor_resize_target_size">Taille de fichier cible</string>
+    <string name="editor_resize_target_size_hint">Taille max (ex. 500)</string>
+    <string name="editor_resize_target_desc">Ajuste automatiquement la résolution et la qualité pour respecter la limite</string>
+    <string name="editor_resize_kb">Ko</string>
+    <string name="editor_resize_mb">Mo</string>
+    <string name="editor_resize_scale">Échelle : %1$d%%</string>
+    <string name="editor_resize_result">Résultat : %1$d × %2$d px</string>
 </resources>
