@@ -653,6 +653,9 @@
     <string name="toast_folder_unexcluded">Dossier restauré dans la galerie</string>
     <string name="no_excluded_folders">Aucun dossier exclu</string>
     <string name="filter_all_albums">Tous</string>
+    <string name="filter_camera_system">Appareil photo &amp; Système</string>
+    <string name="filter_apps">Applications</string>
+    <string name="sort_apply_this_album_only">Appliquer à cet album uniquement</string>
     <string name="album_options_title">Options de l\'album</string>
     <string name="folder_up">Dossier parent</string>
     <string name="folder_empty">Aucun média trouvé dans ce dossier</string>

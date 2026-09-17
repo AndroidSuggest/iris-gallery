@@ -648,6 +648,9 @@
     <string name="toast_folder_unexcluded">文件夹已恢复至画廊</string>
     <string name="no_excluded_folders">无已排除文件夹</string>
     <string name="filter_all_albums">全部</string>
+    <string name="filter_camera_system">相机与系统</string>
+    <string name="filter_apps">应用</string>
+    <string name="sort_apply_this_album_only">仅应用于此相册</string>
     <string name="album_options_title">相册选项</string>
     <string name="folder_up">返回上一级</string>
     <string name="folder_empty">此文件夹中没有媒体文件</string>

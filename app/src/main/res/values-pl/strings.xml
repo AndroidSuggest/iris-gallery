@@ -599,6 +599,9 @@
     <string name="toast_folder_unexcluded">Folder został przywrócony do galerii</string>
     <string name="no_excluded_folders">Brak wykluczonych folderów</string>
     <string name="filter_all_albums">Wszystkie</string>
+    <string name="filter_camera_system">Aparat i system</string>
+    <string name="filter_apps">Aplikacje</string>
+    <string name="sort_apply_this_album_only">Zastosuj tylko do tego albumu</string>
     <string name="album_options_title">Opcje albumu</string>
     <string name="folder_up">W górę</string>
     <string name="folder_empty">Nie znaleziono multimediów w tym folderze</string>

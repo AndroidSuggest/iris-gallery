@@ -15,6 +15,7 @@ data class LibraryPreferencesState(
     val albumOrder: List<Long> = emptyList(),
     val albumSort: AlbumSort = AlbumSort.NEWEST,
     val albumMediaSort: MediaSort = MediaSort.DATE_DESC,
+    val albumMediaSortOverrides: Map<Long, MediaSort> = emptyMap(),
     val excludedFolders: Set<String> = emptySet(),
 )
 
@@ -43,6 +44,14 @@ class LibraryPreferences(context: Context) {
     fun setAlbumOrder(order: List<Long>) = update { copy(albumOrder = order.distinct()) }
 
     fun setAlbumMediaSort(sort: MediaSort) = update { copy(albumMediaSort = sort) }
+
+    fun setAlbumMediaSortOverride(albumId: Long, sort: MediaSort?) = update {
+        if (sort == null) {
+            copy(albumMediaSortOverrides = albumMediaSortOverrides - albumId)
+        } else {
+            copy(albumMediaSortOverrides = albumMediaSortOverrides + (albumId to sort))
+        }
+    }
 
     fun addExcludedFolder(folderPath: String) = update {
         val clean = folderPath.trim().removeSuffix("/")
@@ -87,6 +96,12 @@ class LibraryPreferences(context: Context) {
             .getOrDefault(AlbumSort.NEWEST),
         albumMediaSort = runCatching { MediaSort.valueOf(prefs.getString("album_media_sort", null).orEmpty()) }
             .getOrDefault(MediaSort.DATE_DESC),
+        albumMediaSortOverrides = prefs.getStringSet("album_media_sort_overrides", emptySet()).orEmpty().mapNotNull { value ->
+            val parts = value.split(':', limit = 2)
+            val album = parts.getOrNull(0)?.toLongOrNull()
+            val sort = parts.getOrNull(1)?.let { runCatching { MediaSort.valueOf(it) }.getOrNull() }
+            if (album != null && sort != null) album to sort else null
+        }.toMap(),
         excludedFolders = prefs.getStringSet("excluded_folders", emptySet()).orEmpty(),
     )
 
@@ -98,6 +113,7 @@ class LibraryPreferences(context: Context) {
             .putString("album_order", state.albumOrder.joinToString(","))
             .putString("album_sort", state.albumSort.name)
             .putString("album_media_sort", state.albumMediaSort.name)
+            .putStringSet("album_media_sort_overrides", state.albumMediaSortOverrides.mapTo(mutableSetOf()) { "${it.key}:${it.value.name}" })
             .putStringSet("excluded_folders", state.excludedFolders)
             .apply()
     }

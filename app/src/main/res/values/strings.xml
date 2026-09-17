@@ -655,6 +655,9 @@
     <string name="toast_folder_unexcluded">Folder restored to gallery</string>
     <string name="no_excluded_folders">No excluded folders</string>
     <string name="filter_all_albums">All</string>
+    <string name="filter_camera_system">Camera &amp; System</string>
+    <string name="filter_apps">Apps</string>
+    <string name="sort_apply_this_album_only">Apply to this album only</string>
     <string name="album_options_title">Album options</string>
     <string name="folder_up">Up</string>
     <string name="folder_empty">No media found in this folder</string>

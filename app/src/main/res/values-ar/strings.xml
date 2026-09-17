@@ -561,6 +561,9 @@
     <string name="toast_folder_unexcluded">تمت استعادة المجلد إلى المعرض</string>
     <string name="no_excluded_folders">لا توجد مجلدات مستبعدة</string>
     <string name="filter_all_albums">الكل</string>
+    <string name="filter_camera_system">الكاميرا والنظام</string>
+    <string name="filter_apps">التطبيقات</string>
+    <string name="sort_apply_this_album_only">تطبيق على هذا الألبوم فقط</string>
     <string name="album_options_title">خيارات الألبوم</string>
     <string name="folder_up">للأعلى</string>
     <string name="folder_empty">لم يتم العثور على وسائط في هذا المجلد</string>

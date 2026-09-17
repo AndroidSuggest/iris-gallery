@@ -180,6 +180,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -853,6 +855,7 @@ private fun GalleryApp(
                         albumSort = libraryState.albumSort,
                         albumOrder = libraryState.albumOrder,
                         albumMediaSort = libraryState.albumMediaSort,
+                        albumMediaSortOverrides = libraryState.albumMediaSortOverrides,
                         lockedAuthorized = lockedAuthorized,
                         loading = state.loading,
                         error = state.error,
@@ -866,6 +869,7 @@ private fun GalleryApp(
                         onSetAlbumSort = viewModel::setAlbumSort,
                         onSetAlbumOrder = viewModel::setAlbumOrder,
                         onSetAlbumMediaSort = viewModel::setAlbumMediaSort,
+                        onSetAlbumMediaSortOverride = viewModel::setAlbumMediaSortOverride,
                         excludedFolders = libraryState.excludedFolders,
                         onAddExcludedFolder = viewModel::addExcludedFolder,
                         onRemoveExcludedFolder = viewModel::removeExcludedFolder,
@@ -1266,6 +1270,7 @@ private fun GalleryScaffold(
     albumSort: com.iris.gallery.data.AlbumSort,
     albumOrder: List<Long>,
     albumMediaSort: com.iris.gallery.data.MediaSort = com.iris.gallery.data.MediaSort.DATE_DESC,
+    albumMediaSortOverrides: Map<Long, com.iris.gallery.data.MediaSort> = emptyMap(),
     lockedAuthorized: Boolean,
     loading: Boolean,
     error: String?,
@@ -1279,6 +1284,7 @@ private fun GalleryScaffold(
     onSetAlbumSort: (com.iris.gallery.data.AlbumSort) -> Unit,
     onSetAlbumOrder: (List<Long>) -> Unit,
     onSetAlbumMediaSort: (com.iris.gallery.data.MediaSort) -> Unit = {},
+    onSetAlbumMediaSortOverride: (Long, com.iris.gallery.data.MediaSort?) -> Unit = { _, _ -> },
     onRequestUnlock: () -> Unit,
     onPick: ((MediaImage) -> Unit)?,
     onTrash: (List<MediaImage>, onConfirmed: (() -> Unit)?) -> Unit,
@@ -1430,10 +1436,11 @@ private fun GalleryScaffold(
 
     val displayedPhotos = remember(images, fileSearchQuery) { filterMediaList(images, fileSearchQuery) }
     val displayedFavoritePhotos = remember(favoriteImages, fileSearchQuery) { filterMediaList(favoriteImages, fileSearchQuery) }
-    val displayedAlbumPhotos = remember(selectedAlbum, fileSearchQuery, albumMediaSort) {
+    val effectiveAlbumMediaSort = selectedAlbum?.id?.let { albumMediaSortOverrides[it] } ?: albumMediaSort
+    val displayedAlbumPhotos = remember(selectedAlbum, fileSearchQuery, effectiveAlbumMediaSort) {
         selectedAlbum?.let { album ->
             val filtered = filterMediaList(album.images, fileSearchQuery)
-            when (albumMediaSort) {
+            when (effectiveAlbumMediaSort) {
                 MediaSort.DATE_DESC -> filtered.sortedWith(compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.id })
                 MediaSort.DATE_ASC -> filtered.sortedWith(compareBy<MediaImage> { it.dateTaken }.thenBy { it.id })
                 MediaSort.NAME_ASC -> filtered.sortedWith { a, b -> NaturalOrderComparator.compare(a.name, b.name) }
@@ -1703,7 +1710,13 @@ private fun GalleryScaffold(
                             }
                         }
                         if (destination == 1 && selectedAlbum != null) {
+                            val activeAlbum = selectedAlbum!!
+                            val albumOverride = albumMediaSortOverrides[activeAlbum.id]
+                            val effectiveSort = albumOverride ?: albumMediaSort
                             var albumSortMenuExpanded by remember { mutableStateOf(false) }
+                            var applyToThisAlbumOnly by remember(albumSortMenuExpanded, activeAlbum.id, albumOverride != null) {
+                                mutableStateOf(albumOverride != null)
+                            }
                             Box {
                                 IconButton(onClick = { albumSortMenuExpanded = true }) {
                                     Icon(Icons.AutoMirrored.Outlined.Sort, stringResource(R.string.action_sort))
@@ -1712,6 +1725,32 @@ private fun GalleryScaffold(
                                     expanded = albumSortMenuExpanded,
                                     onDismissRequest = { albumSortMenuExpanded = false }
                                 ) {
+                                    val toggleApplyOnly = {
+                                        val next = !applyToThisAlbumOnly
+                                        applyToThisAlbumOnly = next
+                                        if (next) {
+                                            onSetAlbumMediaSortOverride(activeAlbum.id, effectiveSort)
+                                        } else {
+                                            onSetAlbumMediaSortOverride(activeAlbum.id, null)
+                                        }
+                                    }
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = stringResource(R.string.sort_apply_this_album_only),
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        },
+                                        trailingIcon = {
+                                            Switch(
+                                                checked = applyToThisAlbumOnly,
+                                                onCheckedChange = null,
+                                                modifier = Modifier.scale(0.8f)
+                                            )
+                                        },
+                                        onClick = toggleApplyOnly
+                                    )
+                                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                     listOf(
                                         MediaSort.DATE_DESC to R.string.sort_date_desc,
                                         MediaSort.DATE_ASC to R.string.sort_date_asc,
@@ -1722,12 +1761,17 @@ private fun GalleryScaffold(
                                     ).forEach { (sortOption, labelRes) ->
                                         DropdownMenuItem(
                                             text = { Text(stringResource(labelRes)) },
-                                            trailingIcon = if (albumMediaSort == sortOption) {
+                                            trailingIcon = if (effectiveSort == sortOption) {
                                                 { Icon(Icons.Filled.CheckCircle, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) }
                                             } else null,
                                             onClick = {
                                                 albumSortMenuExpanded = false
-                                                onSetAlbumMediaSort(sortOption)
+                                                if (applyToThisAlbumOnly) {
+                                                    onSetAlbumMediaSortOverride(activeAlbum.id, sortOption)
+                                                } else {
+                                                    onSetAlbumMediaSortOverride(activeAlbum.id, null)
+                                                    onSetAlbumMediaSort(sortOption)
+                                                }
                                             }
                                         )
                                     }
