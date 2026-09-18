@@ -665,7 +665,17 @@
     <string name="view_grid">Vue grille</string>
     <string name="view_list">Vue liste</string>
     <string name="vault_tab_albums">Albums</string>
-    <string name="vault_tab_all_photos">Toutes les photos</string>
+    <string name="vault_tab_all_photos">Toutes les photos et vidéos</string>
+    <string name="lock_album_desc">Déplacer cet album et son contenu vers votre coffre privé</string>
+    <string name="action_exclude_album">Exclure l\'album</string>
+    <string name="exclude_album_desc">Masquer cet album de la galerie</string>
+    <string name="dialog_restore_album_title">Restaurer l\'album</string>
+    <string name="dialog_restore_album_desc">Restaurer les %1$d éléments de %2$s dans la galerie ?</string>
+    <string name="action_save_as">Enregistrer sous…</string>
+    <string name="export_format_title">Format d\'exportation</string>
+    <string name="format_jpeg_desc">Compressé, idéal pour les photos</string>
+    <string name="format_png_desc">Sans perte, supporte la transparence</string>
+    <string name="format_webp_desc">Compression moderne et efficace</string>
 
     <!-- Editor Redesign Categories & Navigation -->
     <string name="editor_category_transform">Transformer</string>

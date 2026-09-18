@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOff
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PhotoLibrary
@@ -72,6 +73,7 @@ fun LibraryScreen(
         item { LibraryCard(Icons.Outlined.Edit, stringResource(R.string.library_editor_title), stringResource(R.string.library_editor_subtitle)) { onOpen("editor") } }
         item { LibraryCard(Icons.Outlined.PhotoLibrary, stringResource(R.string.library_formats_title), stringResource(R.string.library_formats_subtitle)) { onOpen("formats") } }
         item { LibraryCard(Icons.Outlined.Folder, stringResource(R.string.section_folder_view), stringResource(R.string.section_folder_view_desc)) { onOpen("folder_view") } }
+        item { LibraryCard(Icons.Outlined.FolderOff, stringResource(R.string.excluded_folders_title), stringResource(R.string.excluded_folders_desc)) { onOpen("excluded_folders") } }
         item { LibraryCard(Icons.Outlined.Refresh, stringResource(R.string.rescan_media_title), stringResource(R.string.rescan_media_subtitle)) { onOpen("rescan") } }
     }
 }

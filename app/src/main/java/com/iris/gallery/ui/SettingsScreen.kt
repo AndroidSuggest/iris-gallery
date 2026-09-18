@@ -1538,45 +1538,59 @@ fun SettingsScreen(
     }
 
     if (showExcludedFoldersDialog) {
-        AlertDialog(
-            onDismissRequest = { showExcludedFoldersDialog = false },
-            title = { Text(stringResource(R.string.excluded_folders_title)) },
-            text = {
-                if (excludedFolders.isEmpty()) {
-                    Text(stringResource(R.string.no_excluded_folders), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)
-                    ) {
-                        items(excludedFolders.toList()) { folderPath ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(folderPath.substringAfterLast('/'), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                    Text(folderPath, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                                IconButton(onClick = {
-                                    onRemoveExcludedFolder(folderPath)
-                                    Toast.makeText(context, R.string.toast_folder_unexcluded, Toast.LENGTH_SHORT).show()
-                                }) {
-                                    Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                }
+        ExcludedFoldersDialog(
+            excludedFolders = excludedFolders,
+            onRemoveExcludedFolder = onRemoveExcludedFolder,
+            onDismissRequest = { showExcludedFoldersDialog = false }
+        )
+    }
+}
+
+@Composable
+fun ExcludedFoldersDialog(
+    excludedFolders: Set<String>,
+    onRemoveExcludedFolder: (String) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text(stringResource(R.string.excluded_folders_title)) },
+        text = {
+            if (excludedFolders.isEmpty()) {
+                Text(stringResource(R.string.no_excluded_folders), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)
+                ) {
+                    items(excludedFolders.toList()) { folderPath ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(folderPath.substringAfterLast('/'), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(folderPath, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            IconButton(onClick = {
+                                onRemoveExcludedFolder(folderPath)
+                                Toast.makeText(context, R.string.toast_folder_unexcluded, Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showExcludedFoldersDialog = false }) {
-                    Text(stringResource(R.string.action_done_editing))
-                }
             }
-        )
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text(stringResource(R.string.action_done_editing))
+            }
+        }
+    )
 }
 
 @Composable

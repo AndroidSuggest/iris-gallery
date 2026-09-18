@@ -667,7 +667,17 @@
     <string name="view_grid">Grid view</string>
     <string name="view_list">List view</string>
     <string name="vault_tab_albums">Albums</string>
-    <string name="vault_tab_all_photos">All Photos</string>
+    <string name="vault_tab_all_photos">All Photos &amp; Videos</string>
+    <string name="lock_album_desc">Move this album and its contents to your private vault</string>
+    <string name="action_exclude_album">Exclude album</string>
+    <string name="exclude_album_desc">Hide this album from the gallery</string>
+    <string name="dialog_restore_album_title">Restore album</string>
+    <string name="dialog_restore_album_desc">Restore all %1$d items in %2$s to the gallery?</string>
+    <string name="action_save_as">Save as…</string>
+    <string name="export_format_title">Export format</string>
+    <string name="format_jpeg_desc">Compressed, ideal for photos</string>
+    <string name="format_png_desc">Lossless, supports transparency</string>
+    <string name="format_webp_desc">Modern efficient compression</string>
 
     <!-- Editor Redesign Categories & Navigation -->
     <string name="editor_category_transform">Transform</string>

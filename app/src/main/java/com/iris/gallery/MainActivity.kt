@@ -519,6 +519,7 @@ private fun GalleryApp(
         }
     }
     var lockedAuthorized by remember { mutableStateOf(false) }
+    var lastBackgroundTimestamp by remember { mutableStateOf(0L) }
     var isAppUnlocked by remember {
         mutableStateOf(!settings.appLockEnabled || !settings.hasPin || isSessionAppUnlocked)
     }
@@ -526,10 +527,13 @@ private fun GalleryApp(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
-                lockedAuthorized = false // Only lock private vault albums
+                lastBackgroundTimestamp = System.currentTimeMillis()
             } else if (event == Lifecycle.Event.ON_RESUME) {
                 if (permitted) {
                     viewModel.refresh(showLoading = false)
+                }
+                if (lastBackgroundTimestamp > 0L && System.currentTimeMillis() - lastBackgroundTimestamp > 300_000L) {
+                    lockedAuthorized = false
                 }
             }
         }
@@ -857,6 +861,7 @@ private fun GalleryApp(
                         albumMediaSort = libraryState.albumMediaSort,
                         albumMediaSortOverrides = libraryState.albumMediaSortOverrides,
                         lockedAuthorized = lockedAuthorized,
+                        onLockVault = { lockedAuthorized = false },
                         loading = state.loading,
                         error = state.error,
                         favorites = favorites,
@@ -1208,6 +1213,16 @@ private fun BoxScope.IrisPullToRefreshIndicator(
     val dismissAlpha = remember { androidx.compose.animation.core.Animatable(1f) }
     val dismissScale = remember { androidx.compose.animation.core.Animatable(1f) }
 
+    val restingState = remember {
+        object : PullToRefreshState {
+            override val distanceFraction: Float get() = 1f
+            override val isAnimating: Boolean get() = false
+            override suspend fun animateToThreshold() {}
+            override suspend fun animateToHidden() {}
+            override suspend fun snapTo(targetValue: Float) {}
+        }
+    }
+
     LaunchedEffect(isRefreshing) {
         if (isRefreshing) {
             wasRefreshing = true
@@ -1231,13 +1246,9 @@ private fun BoxScope.IrisPullToRefreshIndicator(
         }
     }
 
-    if (state.distanceFraction > 0f && !isRefreshing) {
-        isDismissingInPlace = false
-    }
-
     if (isDismissingInPlace) {
         PullToRefreshDefaults.Indicator(
-            state = state,
+            state = restingState,
             isRefreshing = true,
             modifier = modifier
                 .align(Alignment.TopCenter)
@@ -1272,6 +1283,7 @@ private fun GalleryScaffold(
     albumMediaSort: com.iris.gallery.data.MediaSort = com.iris.gallery.data.MediaSort.DATE_DESC,
     albumMediaSortOverrides: Map<Long, com.iris.gallery.data.MediaSort> = emptyMap(),
     lockedAuthorized: Boolean,
+    onLockVault: () -> Unit = {},
     loading: Boolean,
     error: String?,
     favorites: Set<Long>,
@@ -1324,6 +1336,12 @@ private fun GalleryScaffold(
     var editorImage by remember { mutableStateOf<MediaImage?>(null) }
     var isEditingAlbumOrder by remember { mutableStateOf(false) }
 
+    LaunchedEffect(destination, librarySection) {
+        if (destination != 3 || librarySection != "locked") {
+            onLockVault()
+        }
+    }
+
     var initialUriHandled by remember { mutableStateOf(false) }
     LaunchedEffect(initialViewUri, initialEditMode) {
         if (initialViewUri != null && !initialUriHandled) {
@@ -1369,6 +1387,8 @@ private fun GalleryScaffold(
     }
 
     var confirmEmptyTrash by remember { mutableStateOf(false) }
+    var showExcludedFoldersDialog by remember { mutableStateOf(false) }
+    var pendingRestoreAlbum by remember { mutableStateOf<MediaAlbum?>(null) }
     var selectedIds by remember { mutableStateOf(emptySet<Long>()) }
     var selectionMenuExpanded by remember { mutableStateOf(false) }
     val photoGridState = rememberLazyGridState()
@@ -1456,6 +1476,16 @@ private fun GalleryScaffold(
         destination == 1 && selectedAlbum != null -> displayedAlbumPhotos
         destination == 2 -> displayedFavoritePhotos
         else -> displayedPhotos
+    }
+    val isLockedActive = destination == 3 && librarySection == "locked"
+    DisposableEffect(isLockedActive) {
+        val window = (context as? android.app.Activity)?.window
+        if (isLockedActive) {
+            window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
     }
     fun toggleSelection(id: Long) {
         selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
@@ -1627,6 +1657,11 @@ private fun GalleryScaffold(
                         if (destination == 3 && librarySection == "trash") {
                             IconButton(onClick = { val selected = activeMedia.filter { it.id in selectedIds }; clearSelection(); handleRestore(selected) }) {
                                 Icon(Icons.Outlined.RestoreFromTrash, stringResource(R.string.action_restore))
+                            }
+                        }
+                        if (destination == 3 && librarySection == "locked") {
+                            IconButton(onClick = { val selected = activeMedia.filter { it.id in selectedIds }; clearSelection(); onUnlockMedia(selected) }) {
+                                Icon(Icons.Outlined.LockOpen, stringResource(R.string.action_remove_from_locked))
                             }
                         }
                         IconButton(onClick = ::shareSelection) { Icon(Icons.Outlined.Share, stringResource(R.string.action_share)) }
@@ -2122,7 +2157,10 @@ private fun GalleryScaffold(
                                                 Column(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .clickable { selectedLockedAlbum = album.name }
+                                                        .combinedClickable(
+                                                            onClick = { selectedLockedAlbum = album.name },
+                                                            onLongClick = { pendingRestoreAlbum = album }
+                                                        )
                                                 ) {
                                                     Box(
                                                         modifier = Modifier
@@ -2409,6 +2447,8 @@ private fun GalleryScaffold(
                         else -> LibraryScreen(padding, trashed.size, lockedMedia.size) {
                             if (it == "rescan") {
                                 onRescanMedia()
+                            } else if (it == "excluded_folders") {
+                                showExcludedFoldersDialog = true
                             } else {
                                 librarySection = it
                             }
@@ -2506,6 +2546,36 @@ private fun GalleryScaffold(
             },
             dismissButton = {
                 TextButton(onClick = { confirmEmptyTrash = false }) { Text(stringResource(R.string.action_cancel)) }
+            }
+        )
+    }
+
+    if (showExcludedFoldersDialog) {
+        com.iris.gallery.ui.ExcludedFoldersDialog(
+            excludedFolders = excludedFolders,
+            onRemoveExcludedFolder = onRemoveExcludedFolder,
+            onDismissRequest = { showExcludedFoldersDialog = false }
+        )
+    }
+
+    pendingRestoreAlbum?.let { album ->
+        AlertDialog(
+            onDismissRequest = { pendingRestoreAlbum = null },
+            title = { Text(stringResource(R.string.dialog_restore_album_title)) },
+            text = { Text(stringResource(R.string.dialog_restore_album_desc, album.images.size, album.name)) },
+            confirmButton = {
+                Button(onClick = {
+                    val imagesToRestore = album.images
+                    pendingRestoreAlbum = null
+                    onUnlockMedia(imagesToRestore)
+                }) {
+                    Text(stringResource(R.string.action_restore))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestoreAlbum = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -3153,34 +3223,140 @@ private fun PhotoGrid(
             }
         }
     }
+    val layoutDirection = LocalLayoutDirection.current
+    val startPadding = padding.calculateStartPadding(layoutDirection)
+    val endPadding = padding.calculateEndPadding(layoutDirection)
+    val topPadding = padding.calculateTopPadding()
+    val bottomPadding = padding.calculateBottomPadding()
+    val screenWidthDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val actualColumns = remember(screenWidthDp, cellSize, gridSpacing, density, startPadding, endPadding) {
+        with(density) {
+            val availableWidthPx = (screenWidthDp.dp - startPadding - endPadding - (gridSpacing.dp * 2).dp).roundToPx()
+            val minSizePx = cellSize.roundToPx()
+            val spacingPx = (gridSpacing.dp).dp.roundToPx()
+            maxOf(1, (availableWidthPx + spacingPx) / (minSizePx + spacingPx))
+        }
+    }
+
+    val spacingPx = remember(gridSpacing, density) { with(density) { (gridSpacing.dp).dp.roundToPx() } }
+    val topPaddingPx = remember(gridSpacing, density) { with(density) { (gridSpacing.dp + 3).dp.roundToPx() } }
+
+    val estimatedPhotoHeight = remember(actualColumns, screenWidthDp, cellSize, gridSpacing, density, startPadding, endPadding) {
+        with(density) {
+            val availableWidthPx = (screenWidthDp.dp - startPadding - endPadding - (gridSpacing.dp * 2).dp).roundToPx()
+            val cols = actualColumns.coerceAtLeast(1)
+            val spacing = (gridSpacing.dp).dp.roundToPx()
+            maxOf(1, (availableWidthPx - spacing * (cols - 1)) / cols)
+        }
+    }
+    val estimatedHeaderHeight = remember(density) { with(density) { 50.dp.roundToPx() } }
+
+    val photoHeight = estimatedPhotoHeight
+    val headerHeight = estimatedHeaderHeight
+
+    val rowLayout = remember(groups, showTimeline, actualColumns, timelineItems.size) {
+        val cols = actualColumns.coerceAtLeast(1)
+        val totalCount = timelineItems.size
+        val itemToRow = IntArray(totalCount)
+        val rowToItem = ArrayList<Int>()
+        val isRowHeaderList = ArrayList<Boolean>()
+        var itemIdx = 0
+        var rowIdx = 0
+
+        if (showTimeline) {
+            for (group in groups) {
+                if (itemIdx < totalCount) {
+                    itemToRow[itemIdx] = rowIdx
+                    rowToItem.add(itemIdx)
+                    isRowHeaderList.add(true)
+                    itemIdx++
+                    rowIdx++
+                }
+                val photoCount = group.value.size
+                var photoInGroup = 0
+                while (photoInGroup < photoCount && itemIdx < totalCount) {
+                    rowToItem.add(itemIdx)
+                    isRowHeaderList.add(false)
+                    val inThisRow = minOf(cols, photoCount - photoInGroup)
+                    for (c in 0 until inThisRow) {
+                        if (itemIdx < totalCount) {
+                            itemToRow[itemIdx] = rowIdx
+                            itemIdx++
+                            photoInGroup++
+                        }
+                    }
+                    rowIdx++
+                }
+            }
+        } else {
+            while (itemIdx < totalCount) {
+                rowToItem.add(itemIdx)
+                isRowHeaderList.add(false)
+                val inThisRow = minOf(cols, totalCount - itemIdx)
+                for (c in 0 until inThisRow) {
+                    itemToRow[itemIdx] = rowIdx
+                    itemIdx++
+                }
+                rowIdx++
+            }
+        }
+        val totalRows = maxOf(rowIdx, 1)
+        val isRowHeader = BooleanArray(totalRows) { if (it < isRowHeaderList.size) isRowHeaderList[it] else false }
+        Triple(totalRows, itemToRow, Pair(rowToItem.toIntArray(), isRowHeader))
+    }
+    val totalRows = rowLayout.first
+    val itemToRow = rowLayout.second
+    val rowToItem = rowLayout.third.first
+    val isRowHeader = rowLayout.third.second
+
+    val rowOffsets = remember(rowLayout, photoHeight, headerHeight, spacingPx) {
+        val offsets = IntArray(totalRows)
+        var acc = 0
+        for (r in 0 until totalRows) {
+            offsets[r] = acc
+            val h = if (isRowHeader[r]) headerHeight else photoHeight
+            acc += h + spacingPx
+        }
+        offsets
+    }
+
+    val totalContentHeight = remember(rowLayout, photoHeight, headerHeight, spacingPx) {
+        var acc = 0
+        for (r in 0 until totalRows) {
+            val h = if (isRowHeader[r]) headerHeight else photoHeight
+            acc += h + spacingPx
+        }
+        maxOf(acc, 1)
+    }
+
     var scrubberDragging by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
     var scrubTargetIndex by remember(timelineItems) { mutableIntStateOf(0) }
     var suppressReleaseClickId by remember { mutableStateOf<Long?>(null) }
     val scrubberScope = rememberCoroutineScope()
-    val scrollFraction by remember(timelineItems) {
+
+    val scrollFraction by remember(totalRows, rowOffsets, totalContentHeight, topPaddingPx) {
         derivedStateOf {
             if (scrubberDragging) {
                 scrubFraction
             } else {
                 val layoutInfo = gridState.layoutInfo
-                val totalItems = layoutInfo.totalItemsCount
                 val visibleItems = layoutInfo.visibleItemsInfo
-                if (totalItems <= 1 || visibleItems.isEmpty()) {
+                if (totalRows <= 1 || visibleItems.isEmpty()) {
                     0f
                 } else if (!gridState.canScrollForward) {
                     1f
                 } else if (!gridState.canScrollBackward && gridState.firstVisibleItemScrollOffset == 0) {
                     0f
                 } else {
-                    val firstVisible = gridState.firstVisibleItemIndex
-                    val lastVisible = visibleItems.last().index
-                    val visibleSpan = (lastVisible - firstVisible).coerceAtLeast(1)
-                    val maxScrollable = (totalItems - visibleSpan).coerceAtLeast(1)
-                    val firstItemInfo = visibleItems.firstOrNull()
-                    val itemHeight = firstItemInfo?.size?.height?.toFloat()?.coerceAtLeast(1f) ?: 1f
-                    val itemOffsetProgress = (gridState.firstVisibleItemScrollOffset.toFloat() / itemHeight).coerceIn(0f, 1f)
-                    ((firstVisible + itemOffsetProgress) / maxScrollable.toFloat()).coerceIn(0f, 1f)
+                    val viewportHeight = layoutInfo.viewportSize.height.toFloat()
+                    val maxScrollPx = (totalContentHeight - viewportHeight).coerceAtLeast(1f)
+                    val firstItem = visibleItems.first()
+                    val row = itemToRow.getOrElse(firstItem.index) { 0 }
+                    val rowStartPx = rowOffsets.getOrElse(row) { 0 }
+                    val currentScrollPx = rowStartPx - firstItem.offset.y + topPaddingPx
+                    (currentScrollPx / maxScrollPx).coerceIn(0f, 1f)
                 }
             }
         }
@@ -3231,11 +3407,6 @@ private fun PhotoGrid(
         }
         labelFn
     }
-    val layoutDirection = LocalLayoutDirection.current
-    val startPadding = padding.calculateStartPadding(layoutDirection)
-    val endPadding = padding.calculateEndPadding(layoutDirection)
-    val topPadding = padding.calculateTopPadding()
-    val bottomPadding = padding.calculateBottomPadding()
 
     Box(
         Modifier
@@ -3373,7 +3544,8 @@ private fun PhotoGrid(
                         )
                     } else Modifier
                     Row(
-                        (if (scrubberDragging) Modifier else Modifier.animateItem())
+                        Modifier
+                            .animateItem(fadeInSpec = null)
                             .fillMaxWidth()
                             .then(headerClickModifier)
                             .padding(start = 12.dp, end = 12.dp, top = 18.dp, bottom = 8.dp),
@@ -3391,7 +3563,7 @@ private fun PhotoGrid(
               }
               items(group.value, key = { it.id }, contentType = { "photo" }) { image ->
                 val selected = image.id in selectedIds
-                Box((if (scrubberDragging) Modifier else Modifier.animateItem()).aspectRatio(1f).clip(RoundedCornerShape(if (selected) 14.dp else cornerStyle.dp.dp))
+                Box(Modifier.animateItem(fadeInSpec = null).aspectRatio(1f).clip(RoundedCornerShape(if (selected) 14.dp else cornerStyle.dp.dp))
                     .combinedClickable(onClick = {
                         if (suppressReleaseClickId == image.id) suppressReleaseClickId = null
                         else onOpen(image)
@@ -3440,7 +3612,7 @@ private fun PhotoGrid(
                         .padding(bottom = bottomPadding)
                         .width(40.dp)
                         .graphicsLayer { alpha = scrollerAlpha }
-                        .pointerInput(timelineItems.size) {
+                        .pointerInput(timelineItems.size, totalRows, totalContentHeight) {
                             awaitEachGesture {
                                 val down = awaitFirstDown()
                                 scrubberDragging = true
@@ -3453,17 +3625,32 @@ private fun PhotoGrid(
                                     return (topTarget / maxTravel).coerceIn(0f, 1f)
                                 }
 
-                                var lastScrolledTarget = -1
+                                val viewportHeight = gridState.layoutInfo.viewportSize.height.toFloat()
+                                val maxScrollPx = (totalContentHeight - viewportHeight).coerceAtLeast(1f)
+
+                                var lastTargetIndex = -1
+                                var lastOffset = -1
                                 var scrubScrollJob: kotlinx.coroutines.Job? = null
                                 fun updateTarget(y: Float) {
                                     val frac = calculateFraction(y)
                                     scrubFraction = frac
-                                    val target = (frac * timelineItems.lastIndex).toInt().coerceIn(0, timelineItems.lastIndex)
-                                    scrubTargetIndex = target
-                                    if (target != lastScrolledTarget) {
-                                        lastScrolledTarget = target
+                                    val targetScrollPx = (frac * maxScrollPx).toInt()
+                                    var targetRow = rowOffsets.binarySearch(targetScrollPx)
+                                    if (targetRow < 0) {
+                                        targetRow = (-targetRow - 2).coerceIn(0, totalRows - 1)
+                                    }
+                                    val rowStart = rowOffsets[targetRow]
+                                    val remainder = (targetScrollPx - rowStart).coerceAtLeast(0)
+                                    val targetIndex = rowToItem[targetRow]
+                                    val offset = remainder
+                                    scrubTargetIndex = targetIndex
+                                    if (targetIndex != lastTargetIndex || kotlin.math.abs(offset - lastOffset) > 8) {
+                                        lastTargetIndex = targetIndex
+                                        lastOffset = offset
                                         scrubScrollJob?.cancel()
-                                        scrubScrollJob = scrubberScope.launch { gridState.scrollToItem(target) }
+                                        scrubScrollJob = scrubberScope.launch {
+                                            gridState.scrollToItem(targetIndex, offset)
+                                        }
                                     }
                                 }
 
@@ -3478,9 +3665,18 @@ private fun PhotoGrid(
                                     } while (change.pressed)
                                 } finally {
                                     scrubberDragging = false
-                                    if (scrubTargetIndex != lastScrolledTarget) {
-                                        scrubScrollJob?.cancel()
-                                        scrubberScope.launch { gridState.scrollToItem(scrubTargetIndex) }
+                                    scrubScrollJob?.cancel()
+                                    val targetScrollPx = (scrubFraction * maxScrollPx).toInt()
+                                    var targetRow = rowOffsets.binarySearch(targetScrollPx)
+                                    if (targetRow < 0) {
+                                        targetRow = (-targetRow - 2).coerceIn(0, totalRows - 1)
+                                    }
+                                    val rowStart = rowOffsets[targetRow]
+                                    val remainder = (targetScrollPx - rowStart).coerceAtLeast(0)
+                                    val targetIndex = rowToItem[targetRow]
+                                    val offset = remainder
+                                    scrubberScope.launch {
+                                        gridState.scrollToItem(targetIndex, offset)
                                     }
                                 }
                             }

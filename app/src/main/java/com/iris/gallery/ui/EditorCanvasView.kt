@@ -282,7 +282,11 @@ class EditorCanvasView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (tool != EditorTool.CROP && tool != EditorTool.PIXELATE && tool != EditorTool.BLUR &&
             tool != EditorTool.DRAW && tool != EditorTool.SHAPE && tool != EditorTool.TEXT) return super.onTouchEvent(event)
-        if (event.action == MotionEvent.ACTION_DOWN && !destination.contains(event.x, event.y)) return true
+        if (event.action == MotionEvent.ACTION_DOWN) {
+            val touchSlop = if (tool == EditorTool.CROP) 48f * resources.displayMetrics.density else 0f
+            val extendedDest = RectF(destination).apply { inset(-touchSlop, -touchSlop) }
+            if (!extendedDest.contains(event.x, event.y)) return true
+        }
         val point = viewToNormalized(event.x, event.y)
         when (tool) {
             EditorTool.CROP -> handleCropTouch(event, point)
@@ -414,10 +418,25 @@ class EditorCanvasView(context: Context) : View(context) {
     private fun handleCropTouch(event: MotionEvent, point: BrushPoint) {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                val corners = listOf(BrushPoint(session.crop.left, session.crop.top), BrushPoint(session.crop.right, session.crop.top),
-                    BrushPoint(session.crop.right, session.crop.bottom), BrushPoint(session.crop.left, session.crop.bottom))
-                cropHandle = corners.indices.minByOrNull { hypot(corners[it].x - point.x, corners[it].y - point.y) } ?: -1
-                if (cropHandle >= 0 && hypot(corners[cropHandle].x - point.x, corners[cropHandle].y - point.y) > .12f) cropHandle = 4
+                val cropRect = cropViewRect()
+                val cornersPx = listOf(
+                    cropRect.left to cropRect.top,
+                    cropRect.right to cropRect.top,
+                    cropRect.right to cropRect.bottom,
+                    cropRect.left to cropRect.bottom
+                )
+                val cornerSlopPx = 44f * resources.displayMetrics.density
+                val nearestCornerIdx = cornersPx.indices.minByOrNull {
+                    hypot(cornersPx[it].first - event.x, cornersPx[it].second - event.y)
+                } ?: -1
+
+                if (nearestCornerIdx >= 0 && hypot(cornersPx[nearestCornerIdx].first - event.x, cornersPx[nearestCornerIdx].second - event.y) <= cornerSlopPx) {
+                    cropHandle = nearestCornerIdx
+                } else if (cropRect.contains(event.x, event.y)) {
+                    cropHandle = 4
+                } else {
+                    cropHandle = -1
+                }
                 lastCropPoint = point
             }
             MotionEvent.ACTION_MOVE -> {
@@ -485,7 +504,7 @@ class EditorCanvasView(context: Context) : View(context) {
                         }
                         2 -> {
                             session.crop.right = point.x.coerceIn(session.crop.left + 0.08f, 1f)
-                            session.crop.top = point.y.coerceIn(session.crop.top + 0.08f, 1f)
+                            session.crop.bottom = point.y.coerceIn(session.crop.top + 0.08f, 1f)
                         }
                         3 -> {
                             session.crop.left = point.x.coerceIn(0f, session.crop.right - 0.08f)
@@ -497,6 +516,9 @@ class EditorCanvasView(context: Context) : View(context) {
                 }
                 lastCropPoint = point
                 invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cropHandle = -1
             }
         }
     }

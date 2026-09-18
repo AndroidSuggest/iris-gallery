@@ -703,7 +703,7 @@ fun AlbumsGrid(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = androidx.compose.ui.res.stringResource(com.iris.gallery.R.string.delete_vault_desc),
+                                    text = androidx.compose.ui.res.stringResource(com.iris.gallery.R.string.lock_album_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -733,9 +733,9 @@ fun AlbumsGrid(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.errorContainer),
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.errorContainer),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -747,12 +747,12 @@ fun AlbumsGrid(
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = androidx.compose.ui.res.stringResource(com.iris.gallery.R.string.action_exclude_folder),
+                                    text = androidx.compose.ui.res.stringResource(com.iris.gallery.R.string.action_exclude_album),
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = androidx.compose.ui.res.stringResource(com.iris.gallery.R.string.excluded_folders_desc),
+                                    text = androidx.compose.ui.res.stringResource(com.iris.gallery.R.string.exclude_album_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

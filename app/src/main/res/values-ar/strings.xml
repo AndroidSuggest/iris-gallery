@@ -575,7 +575,17 @@
     <string name="view_grid">عرض الشبكة</string>
     <string name="view_list">عرض القائمة</string>
     <string name="vault_tab_albums">الألبومات</string>
-    <string name="vault_tab_all_photos">جميع الصور</string>
+    <string name="vault_tab_all_photos">جميع الصور والفيديوهات</string>
+    <string name="lock_album_desc">نقل هذا الألبوم ومحتوياته إلى خزانتك الخاصة</string>
+    <string name="action_exclude_album">استبعاد الألبوم</string>
+    <string name="exclude_album_desc">إخفاء هذا الألبوم من المعرض</string>
+    <string name="dialog_restore_album_title">استعادة الألبوم</string>
+    <string name="dialog_restore_album_desc">هل تريد استعادة كافة العناصر (%1$d) في %2$s إلى المعرض؟</string>
+    <string name="action_save_as">حفظ باسم…</string>
+    <string name="export_format_title">تنسيق التصدير</string>
+    <string name="format_jpeg_desc">مضغوط، مثالي للصور</string>
+    <string name="format_png_desc">جودة غير منقوصة، يدعم الشفافية</string>
+    <string name="format_webp_desc">ضغط حديث وعالي الكفاءة</string>
 
     <!-- Details & EXIF -->
     <string name="details_file_info">معلومات الملف</string>

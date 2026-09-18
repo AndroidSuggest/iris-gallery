@@ -80,6 +80,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -134,6 +135,23 @@ enum class PrivacySubMode {
     PIXELATE
 }
 
+enum class ExportFormat(
+    val extension: String,
+    val mimeType: String,
+    val defaultQuality: Int
+) {
+    JPEG("jpg", "image/jpeg", 94),
+    PNG("png", "image/png", 100),
+    WEBP("webp", "image/webp", 92);
+
+    val compressFormat: Bitmap.CompressFormat
+        get() = when (this) {
+            JPEG -> Bitmap.CompressFormat.JPEG
+            PNG -> Bitmap.CompressFormat.PNG
+            WEBP -> if (Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSY else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
+        }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
@@ -174,6 +192,8 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
     var targetMaxBytes by remember(image.id, rotation) { mutableStateOf<Long?>(null) }
     var lockAspect by remember { mutableStateOf(true) }
     var showResizeDialog by remember { mutableStateOf(false) }
+    var showSaveAsDialog by remember { mutableStateOf(false) }
+    var selectedExportFormat by remember { mutableStateOf(ExportFormat.JPEG) }
     var saving by remember { mutableStateOf(false) }
 
     val activeTool = when (category) {
@@ -238,33 +258,11 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
                     actions = {
                         Button(
                             enabled = !saving && transformedPreview != null,
-                            onClick = {
-                                val session = editorView?.session ?: return@Button
-                                val crop = RectF(session.crop)
-                                val strokes = session.strokes.map { it.copy(points = it.points.toMutableList()) }
-                                val textOverlays = session.textOverlays.map { it.copy() }
-                                saving = true
-                                scope.launch {
-                                    val saved = runCatching {
-                                        saveEditedCopy(
-                                            context, image, rotation, flipHorizontal, flipVertical,
-                                            brightness, saturation, contrast, warmth,
-                                            crop,
-                                            if (isCustomResized) resizeWidth.toIntOrNull() else null,
-                                            if (isCustomResized) resizeHeight.toIntOrNull() else null,
-                                            strokes,
-                                            textOverlays,
-                                            targetMaxBytes = if (isCustomResized) targetMaxBytes else null
-                                        )
-                                    }.isSuccess
-                                    saving = false
-                                    onSaved(saved)
-                                }
-                            }
+                            onClick = { showSaveAsDialog = true }
                         ) {
                             Text(
                                 if (saving) stringResource(R.string.action_saving)
-                                else stringResource(R.string.action_save_copy)
+                                else stringResource(R.string.action_save_as)
                             )
                         }
                     }
@@ -502,6 +500,108 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
             }
         )
     }
+
+    if (showSaveAsDialog) {
+        SaveAsDialog(
+            selectedFormat = selectedExportFormat,
+            onSelectFormat = { selectedExportFormat = it },
+            onDismiss = { if (!saving) showSaveAsDialog = false },
+            onConfirm = {
+                showSaveAsDialog = false
+                val session = editorView?.session ?: return@SaveAsDialog
+                val crop = RectF(session.crop)
+                val strokes = session.strokes.map { it.copy(points = it.points.toMutableList()) }
+                val textOverlays = session.textOverlays.map { it.copy() }
+                val format = selectedExportFormat
+                saving = true
+                scope.launch {
+                    val saved = runCatching {
+                        saveEditedCopy(
+                            context, image, rotation, flipHorizontal, flipVertical,
+                            brightness, saturation, contrast, warmth,
+                            crop,
+                            if (isCustomResized) resizeWidth.toIntOrNull() else null,
+                            if (isCustomResized) resizeHeight.toIntOrNull() else null,
+                            strokes,
+                            textOverlays,
+                            targetMaxBytes = if (isCustomResized) targetMaxBytes else null,
+                            format = format
+                        )
+                    }.isSuccess
+                    saving = false
+                    onSaved(saved)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SaveAsDialog(
+    selectedFormat: ExportFormat,
+    onSelectFormat: (ExportFormat) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.export_format_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExportFormat.values().forEach { format ->
+                    val isSelected = selectedFormat == format
+                    val desc = when (format) {
+                        ExportFormat.JPEG -> stringResource(R.string.format_jpeg_desc)
+                        ExportFormat.PNG -> stringResource(R.string.format_png_desc)
+                        ExportFormat.WEBP -> stringResource(R.string.format_webp_desc)
+                    }
+                    Surface(
+                        selected = isSelected,
+                        onClick = { onSelectFormat(format) },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = { onSelectFormat(format) }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = format.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = desc,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(stringResource(R.string.action_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        }
+    )
 }
 
 @Composable
@@ -1612,7 +1712,8 @@ private suspend fun saveEditedCopy(
     requestedHeight: Int?,
     strokes: List<BrushStroke>,
     textOverlays: List<TextOverlay>,
-    targetMaxBytes: Long? = null
+    targetMaxBytes: Long? = null,
+    format: ExportFormat = ExportFormat.JPEG
 ) = withContext(Dispatchers.IO) {
     val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
     val rawSource = runCatching {
@@ -1690,8 +1791,8 @@ private suspend fun saveEditedCopy(
     val nowSec = nowMs / 1000L
     val effectiveTitle = image.title.takeIf { it.isNotBlank() && it != image.name && it != image.name.substringBeforeLast('.') }
     val values = ContentValues().apply {
-        put(MediaStore.Images.Media.DISPLAY_NAME, image.name.substringBeforeLast('.') + "_iris.jpg")
-        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+        put(MediaStore.Images.Media.DISPLAY_NAME, image.name.substringBeforeLast('.') + "_iris." + format.extension)
+        put(MediaStore.Images.Media.MIME_TYPE, format.mimeType)
         put(MediaStore.Images.Media.DATE_ADDED, nowSec)
         put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
         put(MediaStore.Images.Media.DATE_TAKEN, nowMs)
@@ -1706,17 +1807,19 @@ private suspend fun saveEditedCopy(
     val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("Could not create copy")
     context.contentResolver.openOutputStream(uri)?.use { outputStream ->
         if (targetMaxBytes != null && targetMaxBytes > 0) {
-            var quality = 92
+            var quality = format.defaultQuality
             val bos = java.io.ByteArrayOutputStream()
             var fits = false
-            while (!fits && quality >= 25) {
-                bos.reset()
-                resized.compress(Bitmap.CompressFormat.JPEG, quality, bos)
-                if (bos.size() <= targetMaxBytes) {
-                    fits = true
-                    break
+            if (format != ExportFormat.PNG) {
+                while (!fits && quality >= 25) {
+                    bos.reset()
+                    resized.compress(format.compressFormat, quality, bos)
+                    if (bos.size() <= targetMaxBytes) {
+                        fits = true
+                        break
+                    }
+                    quality -= 10
                 }
-                quality -= 10
             }
             if (!fits) {
                 var scale = 0.85f
@@ -1724,23 +1827,32 @@ private suspend fun saveEditedCopy(
                     val sw = (resized.width * scale).toInt().coerceAtLeast(64)
                     val sh = (resized.height * scale).toInt().coerceAtLeast(64)
                     val scaled = Bitmap.createScaledBitmap(resized, sw, sh, true)
-                    quality = 85
-                    while (!fits && quality >= 30) {
+                    quality = format.defaultQuality
+                    if (format == ExportFormat.PNG) {
                         bos.reset()
-                        scaled.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+                        scaled.compress(format.compressFormat, 100, bos)
                         if (bos.size() <= targetMaxBytes) {
                             fits = true
-                            break
                         }
-                        quality -= 15
+                    } else {
+                        while (!fits && quality >= 30) {
+                            bos.reset()
+                            scaled.compress(format.compressFormat, quality, bos)
+                            if (bos.size() <= targetMaxBytes) {
+                                fits = true
+                                break
+                            }
+                            quality -= 15
+                        }
                     }
                     if (scaled !== resized) scaled.recycle()
+                    if (fits) break
                     scale -= 0.15f
                 }
             }
             outputStream.write(bos.toByteArray())
         } else {
-            resized.compress(Bitmap.CompressFormat.JPEG, 94, outputStream)
+            resized.compress(format.compressFormat, format.defaultQuality, outputStream)
         }
     } ?: error("Could not write copy")
     copyExifMetadata(context, image, uri)
