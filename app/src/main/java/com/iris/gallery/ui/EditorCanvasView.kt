@@ -727,7 +727,9 @@ internal fun drawArrow(
     if (length < 2f) return
 
     val angle = kotlin.math.atan2(dy, dx)
-    val headSize = (strokeWidth * 4f).coerceIn(16f, (length * 0.45).toFloat())
+    val maxHead = (length * 0.45).toFloat().coerceAtLeast(2f)
+    val minHead = minOf(16f, maxHead)
+    val headSize = (strokeWidth * 4f).coerceIn(minHead, maxHead)
     val arrowAngle = Math.toRadians(28.0)
 
     val tipX = x2

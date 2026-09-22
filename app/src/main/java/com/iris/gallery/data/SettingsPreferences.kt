@@ -143,6 +143,7 @@ data class SettingsState(
     val appLockPinSalt: String = "",
     val appLockBiometricsEnabled: Boolean = true,
     val confirmDelete: Boolean = false,
+    val useSystemTrash: Boolean = false,
     val preferredEditor: PreferredEditor = PreferredEditor.ALWAYS_ASK,
     val language: String = "",
     val firstLaunchLanguageSetupDone: Boolean = false,
@@ -204,6 +205,7 @@ class SettingsPreferences(context: Context) {
     fun setAppLockEnabled(enabled: Boolean) = update { copy(appLockEnabled = enabled) }
     fun setAppLockBiometricsEnabled(enabled: Boolean) = update { copy(appLockBiometricsEnabled = enabled) }
     fun setConfirmDelete(enabled: Boolean) = update { copy(confirmDelete = enabled) }
+    fun setUseSystemTrash(enabled: Boolean) = update { copy(useSystemTrash = enabled) }
     fun setPreferredEditor(editor: PreferredEditor) = update { copy(preferredEditor = editor) }
     fun setMemoriesNotificationEnabled(enabled: Boolean) = update { copy(memoriesNotificationEnabled = enabled) }
     fun setMemoriesNotificationTime(hour: Int, minute: Int) = update { copy(memoriesNotificationHour = hour, memoriesNotificationMinute = minute) }
@@ -293,6 +295,7 @@ class SettingsPreferences(context: Context) {
             appLockPinSalt = prefs.getString("app_lock_pin_salt", "").orEmpty(),
             appLockBiometricsEnabled = prefs.getBoolean("app_lock_biometrics_enabled", true),
             confirmDelete = prefs.getBoolean("confirm_delete", false),
+            useSystemTrash = prefs.getBoolean("use_system_trash", false),
             preferredEditor = runCatching { PreferredEditor.valueOf(prefs.getString("preferred_editor", null).orEmpty()) }.getOrDefault(PreferredEditor.ALWAYS_ASK),
             language = prefs.getString("app_language", "").orEmpty(),
             firstLaunchLanguageSetupDone = prefs.getBoolean("first_launch_lang_done", false),
@@ -342,6 +345,7 @@ class SettingsPreferences(context: Context) {
             .putString("app_lock_pin_salt", state.appLockPinSalt)
             .putBoolean("app_lock_biometrics_enabled", state.appLockBiometricsEnabled)
             .putBoolean("confirm_delete", state.confirmDelete)
+            .putBoolean("use_system_trash", state.useSystemTrash)
             .putString("preferred_editor", state.preferredEditor.name)
             .putString("app_language", state.language)
             .putBoolean("first_launch_lang_done", state.firstLaunchLanguageSetupDone)

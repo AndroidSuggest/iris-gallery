@@ -428,12 +428,16 @@ private fun requiredPermissions(): Array<String> = when {
     Build.VERSION.SDK_INT >= 33 -> arrayOf(
         Manifest.permission.READ_MEDIA_IMAGES,
         Manifest.permission.READ_MEDIA_VIDEO,
+        Manifest.permission.ACCESS_MEDIA_LOCATION,
     )
-    Build.VERSION.SDK_INT <= 29 -> arrayOf(
+    Build.VERSION.SDK_INT >= 29 -> arrayOf(
+        Manifest.permission.READ_EXTERNAL_STORAGE,
+        Manifest.permission.ACCESS_MEDIA_LOCATION,
+    )
+    else -> arrayOf(
         Manifest.permission.READ_EXTERNAL_STORAGE,
         Manifest.permission.WRITE_EXTERNAL_STORAGE,
     )
-    else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
 }
 
 private enum class MediaFormatFilter(val label: String) {
@@ -597,6 +601,35 @@ private fun GalleryApp(
                     viewModel.refresh(showLoading = false)
                 }
             }
+        }
+    }
+
+    var pendingSystemTrashMedia by remember { mutableStateOf<List<MediaImage>?>(null) }
+    var pendingSystemTrashCallback by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val systemTrashLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val items = pendingSystemTrashMedia
+        val cb = pendingSystemTrashCallback
+        pendingSystemTrashMedia = null
+        pendingSystemTrashCallback = null
+        if (result.resultCode == Activity.RESULT_OK && items != null) {
+            val delIds = items.map { it.id }.toSet()
+            val delPaths = items.map { it.path }.toSet()
+            viewModel.markMediaDeleted(delIds, delPaths)
+            viewModel.refresh(showLoading = false)
+            Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, items.size), Toast.LENGTH_SHORT).show()
+            cb?.invoke()
+        }
+    }
+
+    var pendingSystemRestoreMedia by remember { mutableStateOf<List<MediaImage>?>(null) }
+    val systemRestoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val items = pendingSystemRestoreMedia
+        pendingSystemRestoreMedia = null
+        if (result.resultCode == Activity.RESULT_OK && items != null) {
+            val ids = items.map { it.id }.toSet()
+            val paths = items.map { it.path }.toSet()
+            viewModel.restoreSystemTrash(ids, paths)
+            Toast.makeText(context, "${items.size} item(s) restored", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -784,14 +817,21 @@ private fun GalleryApp(
                         val vaultItems = mediaList.filter { it.id < 0 || it.path.startsWith(context.filesDir.absolutePath) }
                         val galleryLockedIds = mediaList.filter { it.id > 0 && !it.path.startsWith(context.filesDir.absolutePath) }.map { it.id }
                         coroutineScope.launch {
+                            var restoredCount = 0
                             if (vaultItems.isNotEmpty()) {
-                                viewModel.restoreFromVault(vaultItems)
+                                val restored = viewModel.restoreFromVault(vaultItems)
+                                restoredCount += restored.size
                             }
                             if (galleryLockedIds.isNotEmpty()) {
                                 viewModel.setLocked(galleryLockedIds, false)
+                                restoredCount += galleryLockedIds.size
                             }
                             viewModel.refresh()
-                            Toast.makeText(context, "${mediaList.size} item(s) restored from vault", Toast.LENGTH_SHORT).show()
+                            if (restoredCount > 0) {
+                                Toast.makeText(context, context.getString(R.string.toast_vault_items_restored, restoredCount), Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, context.getString(R.string.toast_vault_restore_failed), Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 }
@@ -890,48 +930,100 @@ private fun GalleryApp(
                         onPick = onPick,
                         onTrash = { media, onConfirmed ->
                             if (media.isNotEmpty()) {
-                                coroutineScope.launch {
-                                    val moveResult = viewModel.moveToTrash(media)
-                                    if (moveResult.trashedMedia.isNotEmpty()) {
-                                        if (moveResult.silentSuccess) {
-                                            val delIds = moveResult.originalMedia.map { it.id }.toSet()
-                                            val delPaths = moveResult.originalMedia.map { it.path }.toSet()
-                                            viewModel.markMediaDeleted(delIds, delPaths)
-                                            viewModel.refresh(showLoading = false)
-                                            onConfirmed?.invoke()
-                                            Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, moveResult.trashedMedia.size), Toast.LENGTH_SHORT).show()
-                                        } else if (Build.VERSION.SDK_INT >= 30) {
-                                            runCatching {
-                                                pendingTrashMove = moveResult
-                                                pendingTrashCallback = onConfirmed
-                                                val request = MediaStore.createDeleteRequest(
-                                                    context.contentResolver,
-                                                    moveResult.originalMedia.map { canonicalMediaUri(it) }
-                                                )
-                                                trashDeleteLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
-                                            }.onFailure {
-                                                pendingTrashMove = null
-                                                pendingTrashCallback = null
-                                                viewModel.rollbackTrashMove(moveResult.trashedMedia)
-                                                Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                val systemMedia = media.filter { it.id > 0 && !it.path.startsWith(context.filesDir.absolutePath) }
+                                val internalMedia = media.filter { it.id < 0 || it.path.startsWith(context.filesDir.absolutePath) }
+                                if (settings.useSystemTrash && Build.VERSION.SDK_INT >= 30 && systemMedia.isNotEmpty()) {
+                                    val uris = systemMedia.map { canonicalMediaUri(context, it) }
+                                    val request = runCatching {
+                                        MediaStore.createTrashRequest(context.contentResolver, uris, true)
+                                    }.onFailure {
+                                        android.util.Log.e("IrisTrash", "createTrashRequest failed for uris: $uris", it)
+                                    }.getOrNull()
+
+                                    if (request != null) {
+                                        pendingSystemTrashMedia = systemMedia
+                                        pendingSystemTrashCallback = onConfirmed
+                                        systemTrashLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+                                        if (internalMedia.isNotEmpty()) {
+                                            coroutineScope.launch {
+                                                viewModel.moveToTrash(internalMedia)
                                             }
-                                        } else {
-                                            val allDeleted = moveResult.originalMedia.all { item ->
-                                                runCatching {
-                                                    context.contentResolver.delete(canonicalMediaUri(item), null, null) > 0 ||
-                                                    java.io.File(item.path).delete()
-                                                }.getOrDefault(false)
+                                        }
+                                    } else {
+                                        // Fallback to in-app trash if platform trash request fails
+                                        coroutineScope.launch {
+                                            val moveResult = viewModel.moveToTrash(media)
+                                            if (moveResult.trashedMedia.isNotEmpty()) {
+                                                if (moveResult.silentSuccess) {
+                                                    val delIds = moveResult.originalMedia.map { it.id }.toSet()
+                                                    val delPaths = moveResult.originalMedia.map { it.path }.toSet()
+                                                    viewModel.markMediaDeleted(delIds, delPaths)
+                                                    viewModel.refresh(showLoading = false)
+                                                    onConfirmed?.invoke()
+                                                    Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, moveResult.trashedMedia.size), Toast.LENGTH_SHORT).show()
+                                                } else if (Build.VERSION.SDK_INT >= 30) {
+                                                    runCatching {
+                                                        pendingTrashMove = moveResult
+                                                        pendingTrashCallback = onConfirmed
+                                                        val delRequest = MediaStore.createDeleteRequest(
+                                                            context.contentResolver,
+                                                            moveResult.originalMedia.map { canonicalMediaUri(context, it) }
+                                                        )
+                                                        trashDeleteLauncher.launch(IntentSenderRequest.Builder(delRequest.intentSender).build())
+                                                    }.onFailure {
+                                                        pendingTrashMove = null
+                                                        pendingTrashCallback = null
+                                                        viewModel.rollbackTrashMove(moveResult.trashedMedia)
+                                                        Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
                                             }
-                                            if (allDeleted) {
+                                        }
+                                    }
+                                } else {
+                                    coroutineScope.launch {
+                                        val moveResult = viewModel.moveToTrash(media)
+                                        if (moveResult.trashedMedia.isNotEmpty()) {
+                                            if (moveResult.silentSuccess) {
                                                 val delIds = moveResult.originalMedia.map { it.id }.toSet()
                                                 val delPaths = moveResult.originalMedia.map { it.path }.toSet()
                                                 viewModel.markMediaDeleted(delIds, delPaths)
                                                 viewModel.refresh(showLoading = false)
                                                 onConfirmed?.invoke()
                                                 Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, moveResult.trashedMedia.size), Toast.LENGTH_SHORT).show()
+                                            } else if (Build.VERSION.SDK_INT >= 30) {
+                                                runCatching {
+                                                    pendingTrashMove = moveResult
+                                                    pendingTrashCallback = onConfirmed
+                                                    val request = MediaStore.createDeleteRequest(
+                                                        context.contentResolver,
+                                                        moveResult.originalMedia.map { canonicalMediaUri(context, it) }
+                                                    )
+                                                    trashDeleteLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+                                                }.onFailure {
+                                                    pendingTrashMove = null
+                                                    pendingTrashCallback = null
+                                                    viewModel.rollbackTrashMove(moveResult.trashedMedia)
+                                                    Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                }
                                             } else {
-                                                viewModel.rollbackTrashMove(moveResult.trashedMedia)
-                                                Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                val allDeleted = moveResult.originalMedia.all { item ->
+                                                    runCatching {
+                                                        context.contentResolver.delete(canonicalMediaUri(context, item), null, null) > 0 ||
+                                                        java.io.File(item.path).delete()
+                                                    }.getOrDefault(false)
+                                                }
+                                                if (allDeleted) {
+                                                    val delIds = moveResult.originalMedia.map { it.id }.toSet()
+                                                    val delPaths = moveResult.originalMedia.map { it.path }.toSet()
+                                                    viewModel.markMediaDeleted(delIds, delPaths)
+                                                    viewModel.refresh(showLoading = false)
+                                                    onConfirmed?.invoke()
+                                                    Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, moveResult.trashedMedia.size), Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    viewModel.rollbackTrashMove(moveResult.trashedMedia)
+                                                    Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         }
                                     }
@@ -940,8 +1032,31 @@ private fun GalleryApp(
                         },
                         onRestore = { media ->
                             if (media.isNotEmpty()) {
-                                coroutineScope.launch {
-                                    viewModel.restoreFromTrash(media)
+                                val systemMedia = media.filter { it.id > 0 && !it.path.startsWith(context.filesDir.absolutePath) }
+                                val internalMedia = media.filter { it.id < 0 || it.path.startsWith(context.filesDir.absolutePath) }
+                                if (Build.VERSION.SDK_INT >= 30 && systemMedia.isNotEmpty()) {
+                                    runCatching {
+                                        pendingSystemRestoreMedia = systemMedia
+                                        val uris = systemMedia.map { canonicalMediaUri(context, it) }
+                                        val request = MediaStore.createTrashRequest(context.contentResolver, uris, false)
+                                        systemRestoreLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+                                        if (internalMedia.isNotEmpty()) {
+                                            coroutineScope.launch {
+                                                viewModel.restoreFromTrash(internalMedia)
+                                            }
+                                        }
+                                    }.onFailure {
+                                        coroutineScope.launch {
+                                            if (internalMedia.isNotEmpty()) viewModel.restoreFromTrash(internalMedia)
+                                        }
+                                    }
+                                } else {
+                                    coroutineScope.launch {
+                                        val restored = viewModel.restoreFromTrash(media)
+                                        if (restored.isNotEmpty()) {
+                                            Toast.makeText(context, "${restored.size} item(s) restored", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 }
                             }
                         },
@@ -1114,17 +1229,25 @@ private fun GalleryApp(
                             }
                         },
                         dismissButton = {
-                            TextButton(onClick = {
-                                showAllFilesAccessPromptDialog = false
-                                if (pending != null) {
-                                    val lockedIds = pending.map { it.id }.toSet()
-                                    viewModel.setLocked(lockedIds, true)
-                                    viewModel.refresh()
-                                    Toast.makeText(context, "${pending.size} item(s) hidden in Iris Gallery", Toast.LENGTH_SHORT).show()
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = {
+                                    showAllFilesAccessPromptDialog = false
+                                    if (pending != null) {
+                                        val lockedIds = pending.map { it.id }.toSet()
+                                        viewModel.setLocked(lockedIds, true)
+                                        viewModel.refresh()
+                                        Toast.makeText(context, context.getString(R.string.toast_vault_items_locked_gallery, pending.size), Toast.LENGTH_SHORT).show()
+                                    }
+                                    pendingVaultItems = null
+                                }) {
+                                    Text(stringResource(R.string.action_hide_in_iris))
                                 }
-                                pendingVaultItems = null
-                            }) {
-                                Text(stringResource(R.string.action_cancel))
+                                TextButton(onClick = {
+                                    showAllFilesAccessPromptDialog = false
+                                    pendingVaultItems = null
+                                }) {
+                                    Text(stringResource(R.string.action_cancel))
+                                }
                             }
                         }
                     )
@@ -1135,10 +1258,7 @@ private fun GalleryApp(
 }
 
 private fun canonicalMediaUri(context: android.content.Context, item: MediaImage): Uri {
-    if (item.uri.toString().startsWith("content://media/")) {
-        return item.uri
-    }
-    if (item.uri.scheme != "file" && item.id > 0) {
+    if (item.id > 0) {
         return if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
         else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
     }
@@ -1165,14 +1285,11 @@ private fun canonicalMediaUri(context: android.content.Context, item: MediaImage
 }
 
 private fun canonicalMediaUri(item: MediaImage): Uri {
-    return if (item.uri.toString().startsWith("content://media/")) {
-        item.uri
-    } else if (item.uri.scheme != "file" && item.id > 0) {
-        if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
+    if (item.id > 0) {
+        return if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
         else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
-    } else {
-        item.uri
     }
+    return item.uri
 }
 
 private fun getShareUri(context: android.content.Context, item: MediaImage): Uri {
@@ -1189,15 +1306,56 @@ private fun getShareUri(context: android.content.Context, item: MediaImage): Uri
 
 @Composable
 private fun PermissionScreen(onGrant: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
     ) {
-        Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
-        Text(stringResource(R.string.permission_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(stringResource(R.string.permission_desc), modifier = Modifier.padding(vertical = 16.dp))
-        Button(onClick = onGrant) { Text(stringResource(R.string.permission_button)) }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 32.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(
+                Icons.Outlined.PhotoLibrary,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = stringResource(R.string.permission_title),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = stringResource(R.string.permission_desc),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+            Button(
+                onClick = onGrant,
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 28.dp, vertical = 14.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.permission_button),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
+        }
     }
 }
 
@@ -3837,7 +3995,7 @@ private fun PhotoViewer(
     val current = images[pagerState.currentPage]
     val currentExif by produceState<ExifMetadata?>(initialValue = null, current.id, current.uri, current.dateTaken, current.description, current.title) {
         value = withContext(Dispatchers.IO) {
-            loadExifMetadata(context, current.uri)
+            loadExifMetadata(context, current.uri, current.path)
         }
     }
     val viewerComment = remember(current.id, currentExif) {
@@ -4465,20 +4623,18 @@ private fun PhotoViewer(
                             handleEditClick(current)
                         }
                     }
-                    if (current.id > 0) {
-                        if (isLocked) {
-                            ViewerIconButton(
-                                icon = Icons.Outlined.LockOpen,
-                                label = stringResource(R.string.action_unlock),
-                                modifier = Modifier.weight(1f),
-                            ) { onUnlock(current) }
-                        } else {
-                            ViewerIconButton(
-                                icon = Icons.Outlined.Lock,
-                                label = stringResource(R.string.action_lock),
-                                modifier = Modifier.weight(1f),
-                            ) { onLock(current) }
-                        }
+                    if (isLocked) {
+                        ViewerIconButton(
+                            icon = Icons.Outlined.LockOpen,
+                            label = stringResource(R.string.action_unlock),
+                            modifier = Modifier.weight(1f),
+                        ) { onUnlock(current) }
+                    } else if (current.id > 0) {
+                        ViewerIconButton(
+                            icon = Icons.Outlined.Lock,
+                            label = stringResource(R.string.action_lock),
+                            modifier = Modifier.weight(1f),
+                        ) { onLock(current) }
                     }
                     ViewerIconButton(
                         icon = Icons.Outlined.DeleteOutline,
@@ -5092,9 +5248,9 @@ private fun PhotoDetailsSheet(
 ) {
     val context = LocalContext.current
     var exifRevision by remember { mutableIntStateOf(0) }
-    val exif by produceState<ExifMetadata?>(initialValue = null, image.id, image.uri, exifRevision) {
+    val exif by produceState<ExifMetadata?>(initialValue = null, image.id, image.uri, image.dateTaken, image.title, image.description, exifRevision) {
         value = withContext(Dispatchers.IO) {
-            loadExifMetadata(context, image.uri)
+            loadExifMetadata(context, image.uri, image.path)
         }
     }
     val currentExif = exif

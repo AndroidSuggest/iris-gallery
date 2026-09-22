@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import com.iris.gallery.data.SettingsPreferences
+import kotlinx.coroutines.flow.map
 import com.iris.gallery.data.DuplicateDetector
 import com.iris.gallery.data.DuplicateGroup
 import com.iris.gallery.data.ExifEditRequest
@@ -44,6 +46,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private val vaultRepository = VaultRepository(application)
     private val trashRepository = TrashRepository(application)
     private val albumRepository = AlbumRepository(application)
+    private val settingsPreferences = SettingsPreferences(application)
     private val preferences = application.getSharedPreferences("gallery", 0)
     private val _uiState = MutableStateFlow(GalleryUiState(images = repository.loadSnapshot(), trashed = trashRepository.trashedMedia.value))
     val uiState: StateFlow<GalleryUiState> = _uiState.asStateFlow()
@@ -62,7 +65,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             trashRepository.trashedMedia.collect { trashedList ->
-                _uiState.value = _uiState.value.copy(trashed = trashedList)
+                val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    runCatching { repository.loadImages(trashed = true) }.getOrDefault(emptyList())
+                } else emptyList()
+                val combined = (trashedList + systemTrash).distinctBy { it.id }
+                _uiState.value = _uiState.value.copy(trashed = combined)
+            }
+        }
+        viewModelScope.launch {
+            settingsPreferences.state.map { it.useSystemTrash }.collect {
+                refresh(showLoading = false)
             }
         }
     }
@@ -260,10 +272,19 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun restoreSystemTrash(ids: Set<Long>, paths: Set<String> = emptySet()) {
+        repository.clearRecentMovedOrDeleted(ids, paths)
+        refresh(showLoading = false)
+    }
+
     fun refresh(showLoading: Boolean = true) {
         viewModelScope.launch {
             vaultRepository.loadVaultItems()
-            val trashList = trashRepository.loadTrashItems()
+            val internalTrash = trashRepository.loadTrashItems()
+            val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                runCatching { repository.loadImages(trashed = true) }.getOrDefault(emptyList())
+            } else emptyList()
+            val trashList = (internalTrash + systemTrash).distinctBy { it.id }
             if (showLoading) {
                 _uiState.value = _uiState.value.copy(loading = true, trashed = trashList, error = null)
             }

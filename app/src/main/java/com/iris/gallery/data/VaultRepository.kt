@@ -328,6 +328,9 @@ class VaultRepository(private val context: Context) {
                     File(fallbackDir, item.originalName)
                 }
                 vaultFile.copyTo(destFile, overwrite = true)
+                if (item.dateTaken > 0) {
+                    destFile.setLastModified(item.dateTaken)
+                }
                 MediaScannerConnection.scanFile(
                     context,
                     arrayOf(destFile.absolutePath),
@@ -337,14 +340,20 @@ class VaultRepository(private val context: Context) {
                 true
             } else if (Build.VERSION.SDK_INT >= 29) {
                 val relativePath = computeRelativePath(item.originalPath, item.isVideo)
+                val nowSec = System.currentTimeMillis() / 1000
+                val dateSec = if (item.dateTaken > 0) item.dateTaken / 1000 else nowSec
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, item.originalName)
                     put(
                         MediaStore.MediaColumns.MIME_TYPE,
                         item.mimeType.ifBlank { if (item.isVideo) "video/mp4" else "image/jpeg" }
                     )
-                    put(MediaStore.Images.Media.DATE_TAKEN, item.dateTaken)
-                    put(MediaStore.Images.Media.ORIENTATION, item.orientation)
+                    put(MediaStore.MediaColumns.DATE_ADDED, nowSec)
+                    put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
+                    put(MediaStore.MediaColumns.DATE_TAKEN, item.dateTaken)
+                    if (!item.isVideo) {
+                        put(MediaStore.Images.Media.ORIENTATION, item.orientation)
+                    }
                     if (item.title.isNotBlank()) put(MediaStore.MediaColumns.TITLE, item.title)
                     if (item.isVideo) {
                         put(MediaStore.Video.VideoColumns.DURATION, item.durationMs)
@@ -363,6 +372,7 @@ class VaultRepository(private val context: Context) {
                 }
                 values.clear()
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                values.put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
                 context.contentResolver.update(newUri, values, null, null)
                 true
             } else {
@@ -378,6 +388,9 @@ class VaultRepository(private val context: Context) {
                 }.apply { mkdirs() }
                 val destFile = File(publicDir, item.originalName)
                 vaultFile.copyTo(destFile, overwrite = true)
+                if (item.dateTaken > 0) {
+                    destFile.setLastModified(item.dateTaken)
+                }
                 MediaScannerConnection.scanFile(
                     context,
                     arrayOf(destFile.absolutePath),
@@ -392,15 +405,28 @@ class VaultRepository(private val context: Context) {
     }
 
     private fun computeRelativePath(originalPath: String, isVideo: Boolean): String {
+        val defaultDir = if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
         if (originalPath.isNotBlank()) {
             val parent = File(originalPath).parentFile?.absolutePath.orEmpty()
             val emulatedPrefix = "/storage/emulated/0/"
             if (parent.startsWith(emulatedPrefix)) {
                 val rel = parent.removePrefix(emulatedPrefix).trim('/')
-                if (rel.isNotBlank()) return "$rel/"
+                if (rel.isNotBlank()) {
+                    val root = rel.substringBefore('/')
+                    val allowed = if (isVideo) {
+                        root.equals(Environment.DIRECTORY_DCIM, ignoreCase = true) ||
+                                root.equals(Environment.DIRECTORY_MOVIES, ignoreCase = true)
+                    } else {
+                        root.equals(Environment.DIRECTORY_DCIM, ignoreCase = true) ||
+                                root.equals(Environment.DIRECTORY_PICTURES, ignoreCase = true)
+                    }
+                    if (allowed) {
+                        return "$rel/"
+                    }
+                }
             }
         }
-        return if (isVideo) "${Environment.DIRECTORY_MOVIES}/Iris/" else "${Environment.DIRECTORY_PICTURES}/Iris/"
+        return "$defaultDir/Iris/"
     }
 
     private fun generateUniqueId(existing: List<VaultItem>): Long {

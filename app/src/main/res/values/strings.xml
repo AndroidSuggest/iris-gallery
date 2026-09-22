@@ -711,4 +711,10 @@
     <string name="editor_resize_mb">MB</string>
     <string name="editor_resize_scale">Scale: %1$d%%</string>
     <string name="editor_resize_result">Result: %1$d × %2$d px</string>
+
+    <!-- Trash & Vault Enhancements -->
+    <string name="settings_system_trash_title">Use System Trash Bin</string>
+    <string name="settings_system_trash_desc">Sync deleted media with Android system trash (MediaStore). When disabled, media is kept in Iris Gallery\'s private in-app trash.</string>
+    <string name="action_hide_in_iris">Hide in Iris Only</string>
+    <string name="toast_vault_restore_failed">Failed to restore items. Grant \'All Files Access\' in settings.</string>
 </resources>

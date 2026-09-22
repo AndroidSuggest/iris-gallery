@@ -1260,6 +1260,17 @@ fun SettingsScreen(
                         onCheckedChange = { preferences.setConfirmDelete(it) }
                     )
 
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        SettingsSwitchRow(
+                            title = stringResource(R.string.settings_system_trash_title),
+                            subtitle = stringResource(R.string.settings_system_trash_desc),
+                            checked = settings.useSystemTrash,
+                            onCheckedChange = { preferences.setUseSystemTrash(it) }
+                        )
+                    }
+
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

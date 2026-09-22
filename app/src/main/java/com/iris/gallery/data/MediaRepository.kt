@@ -68,6 +68,11 @@ class MediaRepository(private val context: Context) {
         }
     }
 
+    fun clearRecentMovedOrDeleted(ids: Set<Long>, paths: Set<String> = emptySet()) {
+        ids.forEach { recentMovedOrDeletedIds.remove(it) }
+        paths.forEach { recentMovedOrDeletedPaths.remove(it) }
+    }
+
     fun clearVerifiedPathsCache() {
         verifiedPathsCache.clear()
         inMemoryCache.clear()
@@ -174,9 +179,7 @@ class MediaRepository(private val context: Context) {
             val mediaSelection = buildString {
                 append("(${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?)")
                 if (android.os.Build.VERSION.SDK_INT >= 30) {
-                    if (trashed) {
-                        append(" AND ${MediaStore.MediaColumns.IS_TRASHED} = 1")
-                    } else {
+                    if (!trashed) {
                         append(" AND ${MediaStore.MediaColumns.IS_TRASHED} = 0 AND ${MediaStore.MediaColumns.IS_PENDING} = 0")
                     }
                 } else if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -222,7 +225,7 @@ class MediaRepository(private val context: Context) {
 
                     while (cursor.moveToNext()) {
                         val mediaId = cursor.getLong(id)
-                        if (recentMovedOrDeletedIds.containsKey(mediaId)) {
+                        if (!trashed && recentMovedOrDeletedIds.containsKey(mediaId)) {
                             continue
                         }
                         val isVid = cursor.getInt(mediaType) == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
@@ -239,12 +242,18 @@ class MediaRepository(private val context: Context) {
                         }
 
                         val volumeForUri = if (volName.isNotBlank() && volName != "external_primary") volName else "external"
-                        val mediaUri = if (isVid) {
+                        val baseMediaUri = if (isVid) {
                             ContentUris.withAppendedId(MediaStore.Video.Media.getContentUri(volumeForUri), mediaId)
                         } else {
                             ContentUris.withAppendedId(MediaStore.Images.Media.getContentUri(volumeForUri), mediaId)
                         }
-                        if (filePath.isNotBlank()) {
+                        val mediaUri = if (trashed && android.os.Build.VERSION.SDK_INT >= 30) {
+                            baseMediaUri.buildUpon().appendQueryParameter("include_trashed", "1").build()
+                        } else {
+                            baseMediaUri
+                        }
+
+                        if (!trashed && filePath.isNotBlank()) {
                             if (recentMovedOrDeletedPaths.containsKey(filePath)) {
                                 continue
                             }
@@ -283,7 +292,7 @@ class MediaRepository(private val context: Context) {
                         val itemOrientation = cursor.getInt(orientation)
                         val itemTitle = libraryPreferences.getCustomTitle(mediaId) ?: cursor.getString(title).orEmpty()
 
-                        if (existing != null &&
+                        if (!trashed && existing != null &&
                             existing.name == displayName &&
                             existing.path == filePath &&
                             existing.dateTaken == takenTime &&
@@ -298,6 +307,9 @@ class MediaRepository(private val context: Context) {
                             continue
                         }
 
+                        val itemBucketId = if (trashed) -2L else cursor.getLong(bucketId)
+                        val itemBucketName = if (trashed) "Trash" else cursor.getString(bucketName).orEmpty().ifBlank { "Other" }
+
                         val newImage = MediaImage(
                             id = mediaId,
                             uri = mediaUri,
@@ -306,8 +318,8 @@ class MediaRepository(private val context: Context) {
                             width = itemWidth,
                             height = itemHeight,
                             path = filePath,
-                            bucketId = cursor.getLong(bucketId),
-                            bucketName = cursor.getString(bucketName).orEmpty().ifBlank { "Other" },
+                            bucketId = itemBucketId,
+                            bucketName = itemBucketName,
                             isVideo = isVid,
                             durationMs = itemDuration,
                             mimeType = cursor.getString(mimeType).orEmpty(),
@@ -315,7 +327,9 @@ class MediaRepository(private val context: Context) {
                             orientation = itemOrientation,
                             title = itemTitle,
                         )
-                        inMemoryCache[mediaId] = newImage
+                        if (!trashed) {
+                            inMemoryCache[mediaId] = newImage
+                        }
                         add(newImage)
                     }
                 }
