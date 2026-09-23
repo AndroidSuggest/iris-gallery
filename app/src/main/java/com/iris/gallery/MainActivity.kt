@@ -282,6 +282,7 @@ import com.iris.gallery.data.DuplicateGroup
 import com.iris.gallery.data.SettingsPreferences
 import com.iris.gallery.data.SettingsState
 import com.iris.gallery.data.PreferredEditor
+import com.iris.gallery.data.DeleteMode
 import com.iris.gallery.data.CornerStyle
 import com.iris.gallery.data.GridSpacing
 import com.iris.gallery.data.StartupTab
@@ -692,6 +693,9 @@ private fun GalleryApp(
                 isLocked = false,
                 isInTrash = false,
                 confirmDeleteSetting = settings.confirmDelete,
+                deleteMode = settings.deleteMode,
+                videoMuted = settings.videoMuted,
+                onSetVideoMuted = { settingsPreferences.setVideoMuted(it) },
                 preferredEditor = settings.preferredEditor,
                 onSetPreferredEditor = { settingsPreferences.setPreferredEditor(it) },
                 availableAlbums = emptyList(),
@@ -1684,6 +1688,7 @@ private fun GalleryScaffold(
     var albumPickerAction by remember { mutableStateOf<AlbumAction?>(null) }
     var pendingAlbumMedia by remember { mutableStateOf<List<MediaImage>?>(null) }
     var pendingDeleteItems by remember { mutableStateOf<List<MediaImage>?>(null) }
+    var pendingPermanentDeleteItems by remember { mutableStateOf<List<MediaImage>?>(null) }
     var trashFeedback by remember { mutableStateOf<TrashFeedback?>(null) }
     LaunchedEffect(trashFeedback) {
         if (trashFeedback != null) {
@@ -1828,8 +1833,11 @@ private fun GalleryScaffold(
                             if (selected.isNotEmpty()) {
                                 if (destination == 3 && (librarySection == "trash" || librarySection == "locked")) {
                                     pendingDeleteItems = selected
-                                } else if (settings.confirmDelete) {
+                                } else if (settings.deleteMode == DeleteMode.ALWAYS_ASK || settings.confirmDelete) {
                                     pendingDeleteItems = selected
+                                } else if (settings.deleteMode == DeleteMode.PERMANENT) {
+                                    clearSelection()
+                                    handleDeletePermanently(selected)
                                 } else {
                                     clearSelection()
                                     handleTrash(selected)
@@ -1866,6 +1874,17 @@ private fun GalleryScaffold(
                                             val selected = activeMedia.filter { it.id in selectedIds }
                                             pendingAlbumMedia = selected
                                             albumPickerAction = AlbumAction.COPY
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.action_delete_permanently), color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = { Icon(Icons.Outlined.DeleteForever, null, tint = MaterialTheme.colorScheme.error) },
+                                        onClick = {
+                                            selectionMenuExpanded = false
+                                            val selected = activeMedia.filter { it.id in selectedIds }
+                                            if (selected.isNotEmpty()) {
+                                                pendingPermanentDeleteItems = selected
+                                            }
                                         }
                                     )
                                 }
@@ -2741,13 +2760,13 @@ private fun GalleryScaffold(
     pendingDeleteItems?.let { items ->
         val isInTrash = destination == 3 && librarySection == "trash"
         val isLockedSection = destination == 3 && librarySection == "locked"
-        val isPermanentMode = isInTrash || isLockedSection
+        val isPermanentMode = isInTrash || isLockedSection || settings.deleteMode == DeleteMode.PERMANENT
         var deletePermanently by remember { mutableStateOf(isPermanentMode) }
         AlertDialog(
             onDismissRequest = { pendingDeleteItems = null },
             title = {
                 Text(
-                    if (isPermanentMode) {
+                    if (isPermanentMode || deletePermanently) {
                         stringResource(R.string.delete_permanent_dialog_title, items.size)
                     } else if (items.size == 1) {
                         if (items[0].isVideo) stringResource(R.string.delete_trash_video_title)
@@ -2761,10 +2780,10 @@ private fun GalleryScaffold(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         if (isLockedSection) stringResource(R.string.delete_vault_desc)
-                        else if (isPermanentMode) stringResource(R.string.delete_permanent_desc)
+                        else if (isPermanentMode || deletePermanently) stringResource(R.string.delete_permanent_desc)
                         else stringResource(R.string.delete_trash_desc)
                     )
-                    if (!isPermanentMode) {
+                    if (!isInTrash && !isLockedSection && settings.deleteMode != DeleteMode.PERMANENT) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2809,6 +2828,37 @@ private fun GalleryScaffold(
             },
             dismissButton = {
                 TextButton(onClick = { pendingDeleteItems = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    pendingPermanentDeleteItems?.let { items ->
+        AlertDialog(
+            onDismissRequest = { pendingPermanentDeleteItems = null },
+            title = {
+                Text(stringResource(R.string.delete_permanent_dialog_title, items.size))
+            },
+            text = {
+                Text(stringResource(R.string.delete_permanent_desc))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val toDelete = items
+                    pendingPermanentDeleteItems = null
+                    clearSelection()
+                    handleDeletePermanently(toDelete)
+                }) {
+                    Text(
+                        stringResource(R.string.action_delete_permanently),
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingPermanentDeleteItems = null }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },
@@ -2892,6 +2942,9 @@ private fun GalleryScaffold(
             isLocked = false,
             isInTrash = false,
             confirmDeleteSetting = settings.confirmDelete,
+            deleteMode = settings.deleteMode,
+            videoMuted = settings.videoMuted,
+            onSetVideoMuted = { settingsPreferences.setVideoMuted(it) },
             preferredEditor = settings.preferredEditor,
             onSetPreferredEditor = { settingsPreferences.setPreferredEditor(it) },
             availableAlbums = availableAlbums,
@@ -2965,6 +3018,9 @@ private fun GalleryScaffold(
             isLocked = isViewingLocked,
             isInTrash = isViewingTrash,
             confirmDeleteSetting = settings.confirmDelete,
+            deleteMode = settings.deleteMode,
+            videoMuted = settings.videoMuted,
+            onSetVideoMuted = { settingsPreferences.setVideoMuted(it) },
             preferredEditor = settings.preferredEditor,
             onSetPreferredEditor = { settingsPreferences.setPreferredEditor(it) },
             availableAlbums = availableAlbums,
@@ -3919,6 +3975,9 @@ private fun PhotoViewer(
     isLocked: Boolean = false,
     isInTrash: Boolean = false,
     confirmDeleteSetting: Boolean = false,
+    deleteMode: DeleteMode = DeleteMode.TRASH,
+    videoMuted: Boolean = false,
+    onSetVideoMuted: (Boolean) -> Unit = {},
     preferredEditor: PreferredEditor = PreferredEditor.ALWAYS_ASK,
     onSetPreferredEditor: (PreferredEditor) -> Unit = {},
     availableAlbums: List<MediaAlbum> = emptyList(),
@@ -3971,6 +4030,7 @@ private fun PhotoViewer(
     val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { images.size })
     var showInfo by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var directPermanentDelete by remember { mutableStateOf(false) }
     var showEditChoiceSheet by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var previewPopupImage by remember { mutableStateOf<MediaImage?>(null) }
@@ -4011,8 +4071,17 @@ private fun PhotoViewer(
             PreferredEditor.ALWAYS_ASK -> showEditChoiceSheet = true
         }
     }
-    val videoEngine = remember { Media3VideoEngine(context) }
+    val videoEngine = remember {
+        Media3VideoEngine(context).apply {
+            setMuted(videoMuted)
+        }
+    }
     DisposableEffect(videoEngine) { onDispose { videoEngine.release() } }
+    LaunchedEffect(videoMuted) {
+        if (videoEngine.isMuted != videoMuted) {
+            videoEngine.setMuted(videoMuted)
+        }
+    }
     LaunchedEffect(current.id) {
         if (current.isVideo) videoEngine.load(current.uri) else videoEngine.player.pause()
     }
@@ -4124,6 +4193,7 @@ private fun PhotoViewer(
                         }
                     },
                     onZoomChanged = { zoomed -> zoomedImageId = if (zoomed) media.id else null },
+                    onMuteToggled = onSetVideoMuted,
                 )
             } else {
                 ZoomablePhoto(
@@ -4307,6 +4377,14 @@ private fun PhotoViewer(
                                 }
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.action_delete_permanently), color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Outlined.DeleteForever, null, tint = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                viewerMenuExpanded = false
+                                directPermanentDelete = true
+                            }
+                        )
                     }
                 }
             }
@@ -4641,8 +4719,10 @@ private fun PhotoViewer(
                         label = stringResource(R.string.action_delete),
                         modifier = Modifier.weight(1f),
                     ) {
-                        if (isLocked || confirmDeleteSetting) {
+                        if (isLocked || isInTrash || deleteMode == DeleteMode.ALWAYS_ASK || confirmDeleteSetting) {
                             confirmDelete = true
+                        } else if (deleteMode == DeleteMode.PERMANENT) {
+                            onDelete(current, true)
                         } else {
                             onDelete(current, false)
                         }
@@ -4808,13 +4888,13 @@ private fun PhotoViewer(
         )
     }
     if (confirmDelete) {
-        val isPermanentlyDeleting = isLocked || isInTrash
+        val isPermanentlyDeleting = isLocked || isInTrash || deleteMode == DeleteMode.PERMANENT
         var deletePermanently by remember { mutableStateOf(isPermanentlyDeleting) }
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = {
                 Text(
-                    if (isPermanentlyDeleting) {
+                    if (isPermanentlyDeleting || deletePermanently) {
                         if (current.isVideo) stringResource(R.string.delete_permanent_video_title)
                         else stringResource(R.string.delete_permanent_photo_title)
                     } else {
@@ -4827,7 +4907,7 @@ private fun PhotoViewer(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         if (isLocked) stringResource(R.string.delete_vault_desc)
-                        else if (isPermanentlyDeleting) stringResource(R.string.delete_permanent_desc)
+                        else if (isPermanentlyDeleting || deletePermanently) stringResource(R.string.delete_permanent_desc)
                         else stringResource(R.string.delete_trash_desc)
                     )
                     if (!isPermanentlyDeleting) {
@@ -4866,6 +4946,38 @@ private fun PhotoViewer(
             },
             dismissButton = {
                 TextButton(onClick = { confirmDelete = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    if (directPermanentDelete) {
+        AlertDialog(
+            onDismissRequest = { directPermanentDelete = false },
+            title = {
+                Text(
+                    if (current.isVideo) stringResource(R.string.delete_permanent_video_title)
+                    else stringResource(R.string.delete_permanent_photo_title)
+                )
+            },
+            text = {
+                Text(stringResource(R.string.delete_permanent_desc))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    directPermanentDelete = false
+                    onDelete(current, true)
+                }) {
+                    Text(
+                        stringResource(R.string.action_delete_permanently),
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { directPermanentDelete = false }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },
@@ -5377,7 +5489,9 @@ private fun PhotoDetailsSheet(
             }
 
             // 2. Origin Card (Captured Date & Time, Location, Artist, Copyright, Software)
-            val parsedCapturedDate = remember(currentExif?.dateTimeOriginal, currentExif?.offsetTimeOriginal, image.dateTaken, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+            val parsedCapturedDate = remember(currentExif?.dateTimeOriginal, currentExif?.offsetTimeOriginal, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                val raw = currentExif?.dateTimeOriginal?.trim()
+                if (raw.isNullOrBlank()) return@remember null
                 val offset = currentExif?.offsetTimeOriginal?.trim()
                 val tz = if (!offset.isNullOrBlank()) {
                     val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
@@ -5386,13 +5500,11 @@ private fun PhotoDetailsSheet(
                     java.util.TimeZone.getDefault()
                 }
                 val dateMillis = runCatching {
-                    currentExif?.dateTimeOriginal?.let { raw ->
-                        val parser = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).apply {
-                            timeZone = tz
-                        }
-                        parser.parse(raw)?.time
+                    val parser = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).apply {
+                        timeZone = tz
                     }
-                }.getOrNull() ?: image.dateTaken
+                    parser.parse(raw)?.time
+                }.getOrNull() ?: return@remember null
                 val tf = DateFormat.getTimeInstance(DateFormat.MEDIUM, currentLocale).apply {
                     timeZone = tz
                 }
@@ -5409,7 +5521,7 @@ private fun PhotoDetailsSheet(
                 val tzSuffix = if (!offset.isNullOrBlank()) " ($offset)" else ""
                 "${localDate.format(formatter)} · $timeStr$tzSuffix"
             }
-            val hasOrigin = parsedCapturedDate.isNotBlank() ||
+            val hasOrigin = !parsedCapturedDate.isNullOrBlank() ||
                 (currentExif?.latitude != null && currentExif.longitude != null) ||
                 !currentExif?.artist.isNullOrBlank() ||
                 !currentExif?.copyright.isNullOrBlank() ||
@@ -5426,7 +5538,9 @@ private fun PhotoDetailsSheet(
                             Icon(Icons.Outlined.LocationOn, stringResource(R.string.details_section_origin), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                             Text(stringResource(R.string.details_section_origin), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         }
-                        DetailItem(stringResource(R.string.details_captured), parsedCapturedDate)
+                        if (!parsedCapturedDate.isNullOrBlank()) {
+                            DetailItem(stringResource(R.string.details_captured), parsedCapturedDate)
+                        }
 
                         if (currentExif?.latitude != null && currentExif.longitude != null) {
                             Row(
@@ -5557,11 +5671,35 @@ private fun PhotoDetailsSheet(
                             }
                         }
                     }
-                    val modifiedMillis = remember(image.path, image.dateTaken) {
-                        val f = File(image.path)
-                        if (f.exists() && f.lastModified() > 0) f.lastModified() else image.dateTaken
+                    val addedMillis = remember(image.dateAdded) {
+                        image.dateAdded.takeIf { it > 0 }
                     }
-                    val formattedDate = remember(modifiedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                    val formattedAddedDate = remember(addedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                        if (addedMillis == null) null else {
+                            val tf = DateFormat.getTimeInstance(DateFormat.SHORT, currentLocale)
+                            val timeStr = tf.format(Date(addedMillis))
+                            val localDate = Instant.ofEpochMilli(addedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+                            val formatter = getTimelineFormatter(
+                                format = timelineDateFormat,
+                                isSameYear = false,
+                                showDayOfWeek = false,
+                                locale = currentLocale,
+                                customPattern = customTimelineDateFormat,
+                                smartYearHiding = false,
+                            )
+                            val dateStr = localDate.format(formatter)
+                            "$dateStr · $timeStr"
+                        }
+                    }
+                    val modifiedMillis = remember(image.path, image.dateModified, image.dateTaken) {
+                        if (image.dateModified > 0) {
+                            image.dateModified
+                        } else {
+                            val f = File(image.path)
+                            if (f.exists() && f.lastModified() > 0) f.lastModified() else image.dateTaken
+                        }
+                    }
+                    val formattedModifiedDate = remember(modifiedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
                         val tf = DateFormat.getTimeInstance(DateFormat.SHORT, currentLocale)
                         val timeStr = tf.format(Date(modifiedMillis))
                         val localDate = Instant.ofEpochMilli(modifiedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -5576,9 +5714,13 @@ private fun PhotoDetailsSheet(
                         val dateStr = localDate.format(formatter)
                         "$dateStr · $timeStr"
                     }
-                    DetailItem(stringResource(R.string.details_modified), formattedDate)
+                    if (formattedAddedDate != null) {
+                        DetailItem(stringResource(R.string.details_added), formattedAddedDate)
+                    }
+                    DetailItem(stringResource(R.string.details_modified), formattedModifiedDate)
                     DetailItem(stringResource(R.string.details_type), image.mimeType.ifBlank { if (image.isVideo) stringResource(R.string.format_video) else stringResource(R.string.format_image) })
                     DetailItem(stringResource(R.string.details_size), formatFileSize(image.sizeBytes))
+                    DetailBlock(stringResource(R.string.details_url), image.uri.toString())
                     DetailBlock(stringResource(R.string.details_path), image.path)
                 }
             }

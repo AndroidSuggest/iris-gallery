@@ -234,6 +234,8 @@
     <string name="details_duration">Duration</string>
     <string name="details_format">Format</string>
     <string name="details_type">Type</string>
+    <string name="details_added">Added</string>
+    <string name="details_url">URL</string>
     <string name="details_path">Path</string>
     <string name="details_edit_metadata">Edit metadata &amp; EXIF</string>
     <string name="details_edit_filename">File name</string>
@@ -429,6 +431,11 @@
     <string name="settings_vault_biometric_desc">Require device credential/PIN when viewing locked vault items</string>
     <string name="settings_confirm_delete_title">Confirm Before Deleting</string>
     <string name="settings_confirm_delete_desc">Show confirmation dialog before moving items to trash or deleting permanently</string>
+    <string name="settings_delete_mode_title">Default Delete Action</string>
+    <string name="settings_delete_mode_desc">Choose what happens when deleting photos or videos</string>
+    <string name="settings_delete_mode_trash">Move to trash</string>
+    <string name="settings_delete_mode_permanent">Delete permanently</string>
+    <string name="settings_delete_mode_always_ask">Always ask</string>
     <string name="settings_preferred_editor_title">Default Photo Editor</string>
     <string name="settings_preferred_editor_desc">Choose whether tapping edit opens Iris Editor or external apps</string>
     <string name="settings_editor_always_ask">Always ask</string>
@@ -678,6 +685,8 @@
     <string name="format_jpeg_desc">Compressed, ideal for photos</string>
     <string name="format_png_desc">Lossless, supports transparency</string>
     <string name="format_webp_desc">Modern efficient compression</string>
+    <string name="format_original_tag">Original</string>
+    <string name="format_original_subtitle">Original file format: %1$s</string>
 
     <!-- Editor Redesign Categories & Navigation -->
     <string name="editor_category_transform">Transform</string>

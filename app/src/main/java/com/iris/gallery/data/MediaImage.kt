@@ -25,6 +25,8 @@ data class MediaImage(
     val orientation: Int = 0,
     val title: String = "",
     val description: String = "",
+    val dateModified: Long = 0L,
+    val dateAdded: Long = 0L,
 )
 
 val MediaImage.isScreenshot: Boolean
@@ -854,6 +856,8 @@ fun resolveMediaUri(context: Context, uri: Uri): MediaImage {
         mimeType = resolvedMime,
         sizeBytes = size,
         orientation = orientation,
+        dateModified = physicalFile?.lastModified()?.takeIf { it > 0L } ?: dateTaken,
+        dateAdded = dateTaken,
     )
 }
 

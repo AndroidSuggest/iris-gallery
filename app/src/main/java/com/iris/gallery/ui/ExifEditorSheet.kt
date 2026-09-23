@@ -109,7 +109,7 @@ fun ExifEditorSheet(
         if (t.isBlank() || t == image.name || t == image.name.substringBeforeLast('.')) "" else t
     }
     var mediaTitle by remember(image.id, exif, initialTitle) { mutableStateOf(initialTitle) }
-    val initialDateStr = remember(image.id, exif?.dateTimeOriginal, image.dateTaken, photoTimeZone) {
+    val initialDateStr = remember(image.id, exif?.dateTimeOriginal, photoTimeZone) {
         val raw = exif?.dateTimeOriginal?.trim()
         if (!raw.isNullOrBlank() && raw.length >= 19) {
             val parts = raw.split(" ")
@@ -118,10 +118,10 @@ fun ExifEditorSheet(
                 val timePart = parts[1]
                 "$datePart $timePart"
             } else {
-                dateFormat.format(Date(image.dateTaken))
+                raw
             }
         } else {
-            dateFormat.format(Date(image.dateTaken))
+            ""
         }
     }
     var dateTakenStr by remember(image.id, initialDateStr) { mutableStateOf(initialDateStr) }
@@ -160,7 +160,7 @@ fun ExifEditorSheet(
     fun revertAll() {
         val t = exif?.title?.takeIf { it.isNotBlank() } ?: image.title
         mediaTitle = if (t.isBlank() || t == image.name || t == image.name.substringBeforeLast('.')) "" else t
-        dateTakenStr = dateFormat.format(Date(image.dateTaken))
+        dateTakenStr = initialDateStr
         orientation = (image.orientation % 360 + 360) % 360
 
         userComment = exif?.userComment ?: ""
@@ -629,7 +629,9 @@ fun ExifEditorSheet(
                 Spacer(Modifier.width(12.dp))
                 Button(
                     onClick = {
-                        val parsedTime = runCatching { dateFormat.parse(dateTakenStr)?.time }.getOrNull() ?: image.dateTaken
+                        val parsedTime = if (dateTakenStr.isNotBlank()) {
+                            runCatching { dateFormat.parse(dateTakenStr)?.time }.getOrNull() ?: image.dateTaken
+                        } else 0L
                         val parsedIso = isoStr.toIntOrNull()
                         val parsedAperture = apertureStr.toDoubleOrNull()
                         val parsedFocal = focalLengthStr.toDoubleOrNull()

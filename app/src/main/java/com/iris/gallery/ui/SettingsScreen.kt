@@ -105,6 +105,7 @@ import androidx.compose.ui.res.stringResource
 import com.iris.gallery.R
 import com.iris.gallery.data.AccentColor
 import com.iris.gallery.data.CornerStyle
+import com.iris.gallery.data.DeleteMode
 import com.iris.gallery.data.GridSpacing
 import com.iris.gallery.data.PreferredEditor
 import com.iris.gallery.data.SettingsPreferences
@@ -1259,6 +1260,44 @@ fun SettingsScreen(
                         checked = settings.confirmDelete,
                         onCheckedChange = { preferences.setConfirmDelete(it) }
                     )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            stringResource(R.string.settings_delete_mode_title),
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            stringResource(R.string.settings_delete_mode_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                modifier = Modifier.weight(1f),
+                                selected = settings.deleteMode == DeleteMode.TRASH,
+                                onClick = { preferences.setDeleteMode(DeleteMode.TRASH) },
+                                label = { Text(stringResource(R.string.settings_delete_mode_trash), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                            )
+                            FilterChip(
+                                modifier = Modifier.weight(1f),
+                                selected = settings.deleteMode == DeleteMode.PERMANENT,
+                                onClick = { preferences.setDeleteMode(DeleteMode.PERMANENT) },
+                                label = { Text(stringResource(R.string.settings_delete_mode_permanent), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                            )
+                            FilterChip(
+                                modifier = Modifier.weight(1f),
+                                selected = settings.deleteMode == DeleteMode.ALWAYS_ASK,
+                                onClick = { preferences.setDeleteMode(DeleteMode.ALWAYS_ASK) },
+                                label = { Text(stringResource(R.string.settings_delete_mode_always_ask), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                            )
+                        }
+                    }
 
                     if (Build.VERSION.SDK_INT >= 30) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))

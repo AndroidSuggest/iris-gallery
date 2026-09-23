@@ -27,7 +27,7 @@ class MediaRepository(private val context: Context) {
 
     fun loadSnapshot(): List<MediaImage> = runCatching {
         DataInputStream(snapshot.openRead().buffered()).use { input ->
-            if (input.readInt() != 2) return@use emptyList()
+            if (input.readInt() != 3) return@use emptyList()
             val list = List(input.readInt().coerceIn(0, 100_000)) {
                 val id = input.readLong(); val isVideo = input.readBoolean()
                 val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
@@ -36,10 +36,12 @@ class MediaRepository(private val context: Context) {
                 val path = input.readUTF(); val bucketId = input.readLong(); val bucketName = input.readUTF()
                 val durationMs = input.readLong(); val mimeType = input.readUTF(); val sizeBytes = input.readLong()
                 val orientation = input.readInt(); val savedTitle = input.readUTF()
+                val dateModified = input.readLong(); val dateAdded = input.readLong()
                 val title = libraryPreferences.getCustomTitle(id) ?: savedTitle
                 MediaImage(id, ContentUris.withAppendedId(collection, id), name, dateTaken,
                     width, height, path, bucketId, bucketName,
-                    isVideo, durationMs, mimeType, sizeBytes, orientation, title)
+                    isVideo, durationMs, mimeType, sizeBytes, orientation, title,
+                    dateModified = dateModified, dateAdded = dateAdded)
             }
             val now = System.currentTimeMillis()
             list.forEach { item ->
@@ -152,6 +154,7 @@ class MediaRepository(private val context: Context) {
             MediaStore.Images.Media.DISPLAY_NAME,
             MediaStore.Images.Media.DATE_TAKEN,
             MediaStore.Images.Media.DATE_ADDED,
+            MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.Images.Media.WIDTH,
             MediaStore.Images.Media.HEIGHT,
             MediaStore.Images.Media.BUCKET_ID,
@@ -209,6 +212,7 @@ class MediaRepository(private val context: Context) {
                     val name = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
                     val taken = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
                     val added = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+                    val modified = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
                     val width = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
                     val height = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
                     val bucketId = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
@@ -283,8 +287,16 @@ class MediaRepository(private val context: Context) {
                         }
 
                         val existing = inMemoryCache[mediaId]
-                        val takenTime = cursor.getLong(taken).takeIf { it > 0 }
-                            ?: (cursor.getLong(added) * 1_000)
+                        val cursorDateTaken = cursor.getLong(taken)
+                        val cursorDateModified = cursor.getLong(modified) * 1_000L
+                        val cursorDateAdded = cursor.getLong(added) * 1_000L
+                        val takenTime = if (cursorDateTaken > 0L) {
+                            cursorDateTaken
+                        } else if (cursorDateModified > 0L) {
+                            cursorDateModified
+                        } else {
+                            cursorDateAdded
+                        }
                         val itemWidth = cursor.getInt(width)
                         val itemHeight = cursor.getInt(height)
                         val itemDuration = cursor.getLong(duration)
@@ -296,6 +308,8 @@ class MediaRepository(private val context: Context) {
                             existing.name == displayName &&
                             existing.path == filePath &&
                             existing.dateTaken == takenTime &&
+                            existing.dateModified == cursorDateModified &&
+                            existing.dateAdded == cursorDateAdded &&
                             existing.sizeBytes == itemSize &&
                             existing.orientation == itemOrientation &&
                             existing.width == itemWidth &&
@@ -326,6 +340,8 @@ class MediaRepository(private val context: Context) {
                             sizeBytes = itemSize,
                             orientation = itemOrientation,
                             title = itemTitle,
+                            dateModified = cursorDateModified,
+                            dateAdded = cursorDateAdded,
                         )
                         if (!trashed) {
                             inMemoryCache[mediaId] = newImage
@@ -426,13 +442,14 @@ class MediaRepository(private val context: Context) {
         runCatching {
             stream = snapshot.startWrite()
             val output = DataOutputStream(stream!!.buffered())
-            output.writeInt(2); output.writeInt(media.size)
+            output.writeInt(3); output.writeInt(media.size)
             media.forEach { item ->
                 output.writeLong(item.id); output.writeBoolean(item.isVideo); output.writeUTF(item.name.take(8_000))
                 output.writeLong(item.dateTaken); output.writeInt(item.width); output.writeInt(item.height)
                 output.writeUTF(item.path.take(16_000)); output.writeLong(item.bucketId); output.writeUTF(item.bucketName.take(8_000))
                 output.writeLong(item.durationMs); output.writeUTF(item.mimeType.take(1_000)); output.writeLong(item.sizeBytes)
                 output.writeInt(item.orientation); output.writeUTF(item.title.take(8_000))
+                output.writeLong(item.dateModified); output.writeLong(item.dateAdded)
             }
             output.flush()
             snapshot.finishWrite(stream)

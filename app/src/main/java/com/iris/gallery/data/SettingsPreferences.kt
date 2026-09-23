@@ -14,6 +14,7 @@ enum class CornerStyle(val dp: Int) { SHARP(0), CLASSIC(4), ROUNDED(12), SQUIRCL
 enum class GridSpacing(val dp: Int) { COMPACT(2), STANDARD(4), RELAXED(8) }
 enum class StartupTab(val pageIndex: Int) { PHOTOS(0), ALBUMS(1), FAVORITES(2), LIBRARY(3) }
 enum class PreferredEditor { ALWAYS_ASK, BUILT_IN, EXTERNAL }
+enum class DeleteMode { TRASH, PERMANENT, ALWAYS_ASK }
 
 enum class TimelineDateFormat {
     SYSTEM_DEFAULT,
@@ -143,7 +144,9 @@ data class SettingsState(
     val appLockPinSalt: String = "",
     val appLockBiometricsEnabled: Boolean = true,
     val confirmDelete: Boolean = false,
+    val deleteMode: DeleteMode = DeleteMode.TRASH,
     val useSystemTrash: Boolean = false,
+    val videoMuted: Boolean = false,
     val preferredEditor: PreferredEditor = PreferredEditor.ALWAYS_ASK,
     val language: String = "",
     val firstLaunchLanguageSetupDone: Boolean = false,
@@ -205,7 +208,9 @@ class SettingsPreferences(context: Context) {
     fun setAppLockEnabled(enabled: Boolean) = update { copy(appLockEnabled = enabled) }
     fun setAppLockBiometricsEnabled(enabled: Boolean) = update { copy(appLockBiometricsEnabled = enabled) }
     fun setConfirmDelete(enabled: Boolean) = update { copy(confirmDelete = enabled) }
+    fun setDeleteMode(mode: DeleteMode) = update { copy(deleteMode = mode) }
     fun setUseSystemTrash(enabled: Boolean) = update { copy(useSystemTrash = enabled) }
+    fun setVideoMuted(muted: Boolean) = update { copy(videoMuted = muted) }
     fun setPreferredEditor(editor: PreferredEditor) = update { copy(preferredEditor = editor) }
     fun setMemoriesNotificationEnabled(enabled: Boolean) = update { copy(memoriesNotificationEnabled = enabled) }
     fun setMemoriesNotificationTime(hour: Int, minute: Int) = update { copy(memoriesNotificationHour = hour, memoriesNotificationMinute = minute) }
@@ -295,7 +300,9 @@ class SettingsPreferences(context: Context) {
             appLockPinSalt = prefs.getString("app_lock_pin_salt", "").orEmpty(),
             appLockBiometricsEnabled = prefs.getBoolean("app_lock_biometrics_enabled", true),
             confirmDelete = prefs.getBoolean("confirm_delete", false),
+            deleteMode = runCatching { DeleteMode.valueOf(prefs.getString("delete_mode", null).orEmpty()) }.getOrDefault(DeleteMode.TRASH),
             useSystemTrash = prefs.getBoolean("use_system_trash", false),
+            videoMuted = prefs.getBoolean("video_muted", false),
             preferredEditor = runCatching { PreferredEditor.valueOf(prefs.getString("preferred_editor", null).orEmpty()) }.getOrDefault(PreferredEditor.ALWAYS_ASK),
             language = prefs.getString("app_language", "").orEmpty(),
             firstLaunchLanguageSetupDone = prefs.getBoolean("first_launch_lang_done", false),
@@ -345,7 +352,9 @@ class SettingsPreferences(context: Context) {
             .putString("app_lock_pin_salt", state.appLockPinSalt)
             .putBoolean("app_lock_biometrics_enabled", state.appLockBiometricsEnabled)
             .putBoolean("confirm_delete", state.confirmDelete)
+            .putString("delete_mode", state.deleteMode.name)
             .putBoolean("use_system_trash", state.useSystemTrash)
+            .putBoolean("video_muted", state.videoMuted)
             .putString("preferred_editor", state.preferredEditor.name)
             .putString("app_language", state.language)
             .putBoolean("first_launch_lang_done", state.firstLaunchLanguageSetupDone)

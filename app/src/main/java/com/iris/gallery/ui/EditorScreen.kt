@@ -193,7 +193,16 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
     var lockAspect by remember { mutableStateOf(true) }
     var showResizeDialog by remember { mutableStateOf(false) }
     var showSaveAsDialog by remember { mutableStateOf(false) }
-    var selectedExportFormat by remember { mutableStateOf(ExportFormat.JPEG) }
+    val originalExportFormat = remember(image.id, image.mimeType, image.path, image.name) {
+        val mime = image.mimeType.lowercase()
+        val name = (image.name.ifBlank { image.path }).lowercase()
+        when {
+            mime.contains("png") || name.endsWith(".png") -> ExportFormat.PNG
+            mime.contains("webp") || name.endsWith(".webp") -> ExportFormat.WEBP
+            else -> ExportFormat.JPEG
+        }
+    }
+    var selectedExportFormat by remember(image.id) { mutableStateOf(originalExportFormat) }
     var saving by remember { mutableStateOf(false) }
 
     val activeTool = when (category) {
@@ -504,6 +513,7 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
     if (showSaveAsDialog) {
         SaveAsDialog(
             selectedFormat = selectedExportFormat,
+            originalFormat = originalExportFormat,
             onSelectFormat = { selectedExportFormat = it },
             onDismiss = { if (!saving) showSaveAsDialog = false },
             onConfirm = {
@@ -539,6 +549,7 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
 @Composable
 private fun SaveAsDialog(
     selectedFormat: ExportFormat,
+    originalFormat: ExportFormat,
     onSelectFormat: (ExportFormat) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
@@ -548,6 +559,11 @@ private fun SaveAsDialog(
         title = { Text(stringResource(R.string.export_format_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = stringResource(R.string.format_original_subtitle, originalFormat.name),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 ExportFormat.values().forEach { format ->
                     val isSelected = selectedFormat == format
                     val desc = when (format) {
@@ -574,12 +590,30 @@ private fun SaveAsDialog(
                                 onClick = { onSelectFormat(format) }
                             )
                             Column(Modifier.weight(1f)) {
-                                Text(
-                                    text = format.name,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = format.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (format == originalFormat) {
+                                        Surface(
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                                            shape = RoundedCornerShape(6.dp),
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.format_original_tag),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
                                     text = desc,
                                     style = MaterialTheme.typography.bodySmall,

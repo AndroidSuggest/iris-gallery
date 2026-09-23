@@ -116,10 +116,11 @@ fun VideoPage(
     onDismissDrag: (Float) -> Unit = {},
     onDismissRelease: (Float) -> Unit = {},
     onZoomChanged: (Boolean) -> Unit,
+    onMuteToggled: ((Boolean) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var playing by remember { mutableStateOf(false) }
-    var isMuted by remember { mutableStateOf(engine.player.volume == 0f) }
+    var isMuted by remember(engine.isMuted) { mutableStateOf(engine.isMuted) }
     var isLooping by remember(media.id, loop) { mutableStateOf(engine.player.repeatMode == Player.REPEAT_MODE_ONE || loop) }
     var muteFeedbackEvent by remember { mutableStateOf<Pair<Boolean, Long>?>(null) }
     var lastMuteFeedback by remember { mutableStateOf<Boolean?>(null) }
@@ -559,6 +560,7 @@ fun VideoPage(
                     isMuted = next
                     lastMuteFeedback = next
                     muteFeedbackEvent = next to SystemClock.uptimeMillis()
+                    onMuteToggled?.invoke(next)
                 }) {
                     AnimatedContent(
                         targetState = isMuted,
