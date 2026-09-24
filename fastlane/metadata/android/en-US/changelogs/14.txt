@@ -1,0 +1,8 @@
+• Per-Album Sorting: Set custom sort order for specific albums without affecting the rest of the gallery
+• Album Categories: Added filter chips (All, Camera & System, Apps) to separate camera shots from app media
+• Albums Tab Cleanup: Compact dropdown menu for album sorting
+• Customizable Viewer Header: Configure what displays at the top of the photo viewer (filename, date, time, resolution)
+• Swipe in Details: Navigate photos while the info sheet is open
+• External Editors: Fixed third-party editors failing to open photos
+• Metadata & Editor: Keep or strip EXIF metadata when saving edits, and fixed title persistence
+• Translations: Updated Polish, Chinese, Arabic, and French translations
