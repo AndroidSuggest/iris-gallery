@@ -2,7 +2,7 @@
 • Permanent Delete Option: Direct permanent deletion in menus and configurable default delete action in Settings (Trash vs Permanent)
 • SD Card Trash Fix: Resolved trash and deletion errors on SD cards and external volumes by preserving storage volume names
 • Photo Editor Export: Support for JPEG, PNG, and WebP export formats with automatic format detection
-• Scrollbar Overhaul: Precomputed row layout eliminates scrollbar jitter, plus fixed bottom track padding
+• Scrollbar Overhaul: Precomputed row layout eliminates scrollbar jitter, plus fixed bottom track padding (thanks @AndroidSuggest)
 • Vault Security: Added 5-minute background authentication timeout and immediate lock on navigating away
 • Media Details: Added Date Added and Content URI to info card, and fixed capture date fallback order
-• Bug Fixes: Fixed editor arrow tool crash, filename rename title sync, and album sort chip overlap
+• Developer & UI Polish: Added --no-deploy build flag (thanks @n40l-remimu), fixed editor arrow tool crash, and fixed album chip overlap
