@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import com.iris.gallery.ui.MediaAlbum
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.abs
 
 enum class AlbumAction {
     MOVE,
@@ -86,7 +87,11 @@ class AlbumRepository(private val context: Context) {
                             destFile.exists() && destFile.length() > 0
                         }.getOrDefault(false)
                     }
-                    if (copied) {
+                    val srcLen = if (srcFile != null && srcFile.exists()) srcFile.length() else item.sizeBytes
+                    val copyVerified = copied && destFile.exists() && destFile.length() > 0 &&
+                        (srcLen <= 0L || destFile.length() == srcLen)
+
+                    if (copyVerified) {
                         val deleted = deleteSourceMedia(item)
                         if (deleted || (srcFile != null && !srcFile.exists())) {
                             done = true
@@ -94,14 +99,28 @@ class AlbumRepository(private val context: Context) {
                             // If source file still exists, try direct delete
                             done = if (srcFile != null) runCatching { srcFile.delete() }.getOrDefault(false) else true
                         }
+                        if (!done) {
+                            // Source deletion failed: clean up destFile to avoid orphan duplicate
+                            runCatching { destFile.delete() }
+                        }
+                    } else if (copied) {
+                        // Incomplete copy: clean up destFile
+                        runCatching { destFile.delete() }
                     }
                 }
             }
 
             if (done) {
                 success++
+                if (item.dateModified > 0) {
+                    runCatching { destFile.setLastModified(item.dateModified) }
+                } else if (item.dateTaken > 0) {
+                    runCatching { destFile.setLastModified(item.dateTaken) }
+                }
                 val targetBucketId = targetDir.absolutePath.lowercase(java.util.Locale.ROOT).hashCode().toLong()
+                val tempId = -abs(destFile.absolutePath.hashCode().toLong()).coerceAtLeast(1L)
                 val newMedia = item.copy(
+                    id = tempId,
                     path = destFile.absolutePath,
                     name = destFile.name,
                     uri = android.net.Uri.fromFile(destFile),
@@ -229,7 +248,9 @@ class AlbumRepository(private val context: Context) {
                 fileDeleted = true
             }
         }
-        val mediaStoreUri = if (item.id > 0) {
+        val mediaStoreUri = if (item.uri.authority == "media") {
+            item.uri.buildUpon().clearQuery().build()
+        } else if (item.id > 0) {
             if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
             else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
         } else {
@@ -259,7 +280,9 @@ class AlbumRepository(private val context: Context) {
     }
 
     private fun deleteSourceMediaStoreRow(item: MediaImage) {
-        val mediaStoreUri = if (item.id > 0) {
+        val mediaStoreUri = if (item.uri.authority == "media") {
+            item.uri.buildUpon().clearQuery().build()
+        } else if (item.id > 0) {
             if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
             else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
         } else {

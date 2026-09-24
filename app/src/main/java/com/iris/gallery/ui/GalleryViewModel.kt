@@ -290,8 +290,19 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
             val media = runCatching { repository.loadImages() }
             media.fold(
-                onSuccess = {
-                    _uiState.value = _uiState.value.copy(images = it, loading = false, trashed = trashList, error = null)
+                onSuccess = { loaded ->
+                    val loadedPaths = loaded.mapTo(HashSet(loaded.size)) { it.path }
+                    val currentPending = _uiState.value.images.filter { item ->
+                        item.path.isNotBlank() && item.path !in loadedPaths && java.io.File(item.path).exists()
+                    }
+                    val combined = if (currentPending.isNotEmpty()) {
+                        (loaded + currentPending).distinctBy { it.path }.sortedWith(
+                            compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.id }
+                        )
+                    } else {
+                        loaded
+                    }
+                    _uiState.value = _uiState.value.copy(images = combined, loading = false, trashed = trashList, error = null)
                     if (_duplicateState.value.hasScanned) _duplicateState.value = DuplicateScanState()
                 },
                 onFailure = { _uiState.value = _uiState.value.copy(loading = false,

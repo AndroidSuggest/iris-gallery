@@ -11,8 +11,8 @@ android {
         applicationId = "com.iris.gallery"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.7.0"
+        versionCode = 15
+        versionName = "0.7.1"
     }
 
     buildFeatures {

@@ -647,10 +647,10 @@ fun SettingsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 val sampleAlbums = listOf(
-                                    Triple("Camera", listOf(colorScheme.primaryContainer, colorScheme.primary.copy(alpha = 0.35f)), colorScheme.onPrimaryContainer),
-                                    Triple("Screenshots", listOf(colorScheme.secondaryContainer, colorScheme.secondary.copy(alpha = 0.3f)), colorScheme.onSecondaryContainer),
-                                    Triple("Downloads", listOf(colorScheme.tertiaryContainer, colorScheme.tertiary.copy(alpha = 0.35f)), colorScheme.onTertiaryContainer),
-                                    Triple("Wallpapers", listOf(colorScheme.surfaceVariant, colorScheme.surfaceVariant.copy(alpha = 0.6f)), colorScheme.onSurfaceVariant),
+                                    Triple(stringResource(R.string.album_sample_camera), listOf(colorScheme.primaryContainer, colorScheme.primary.copy(alpha = 0.35f)), colorScheme.onPrimaryContainer),
+                                    Triple(stringResource(R.string.album_sample_screenshots), listOf(colorScheme.secondaryContainer, colorScheme.secondary.copy(alpha = 0.3f)), colorScheme.onSecondaryContainer),
+                                    Triple(stringResource(R.string.album_sample_downloads), listOf(colorScheme.tertiaryContainer, colorScheme.tertiary.copy(alpha = 0.35f)), colorScheme.onTertiaryContainer),
+                                    Triple(stringResource(R.string.album_sample_wallpapers), listOf(colorScheme.surfaceVariant, colorScheme.surfaceVariant.copy(alpha = 0.6f)), colorScheme.onSurfaceVariant),
                                 )
                                 val countShown = minOf(albumColumns, sampleAlbums.size)
                                 for (i in 0 until countShown) {
@@ -1282,19 +1282,19 @@ fun SettingsScreen(
                                 modifier = Modifier.weight(1f),
                                 selected = settings.deleteMode == DeleteMode.TRASH,
                                 onClick = { preferences.setDeleteMode(DeleteMode.TRASH) },
-                                label = { Text(stringResource(R.string.settings_delete_mode_trash), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                                label = { Text(stringResource(R.string.settings_delete_mode_trash), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             )
                             FilterChip(
                                 modifier = Modifier.weight(1f),
                                 selected = settings.deleteMode == DeleteMode.PERMANENT,
                                 onClick = { preferences.setDeleteMode(DeleteMode.PERMANENT) },
-                                label = { Text(stringResource(R.string.settings_delete_mode_permanent), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                                label = { Text(stringResource(R.string.settings_delete_mode_permanent), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             )
                             FilterChip(
                                 modifier = Modifier.weight(1f),
                                 selected = settings.deleteMode == DeleteMode.ALWAYS_ASK,
                                 onClick = { preferences.setDeleteMode(DeleteMode.ALWAYS_ASK) },
-                                label = { Text(stringResource(R.string.settings_delete_mode_always_ask), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                                label = { Text(stringResource(R.string.settings_delete_mode_always_ask), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             )
                         }
                     }

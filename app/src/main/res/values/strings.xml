@@ -433,9 +433,13 @@
     <string name="settings_confirm_delete_desc">Show confirmation dialog before moving items to trash or deleting permanently</string>
     <string name="settings_delete_mode_title">Default Delete Action</string>
     <string name="settings_delete_mode_desc">Choose what happens when deleting photos or videos</string>
-    <string name="settings_delete_mode_trash">Move to trash</string>
-    <string name="settings_delete_mode_permanent">Delete permanently</string>
+    <string name="settings_delete_mode_trash">Trash</string>
+    <string name="settings_delete_mode_permanent">Permanent</string>
     <string name="settings_delete_mode_always_ask">Always ask</string>
+    <string name="album_sample_camera">Camera</string>
+    <string name="album_sample_screenshots">Screenshots</string>
+    <string name="album_sample_downloads">Downloads</string>
+    <string name="album_sample_wallpapers">Wallpapers</string>
     <string name="settings_preferred_editor_title">Default Photo Editor</string>
     <string name="settings_preferred_editor_desc">Choose whether tapping edit opens Iris Editor or external apps</string>
     <string name="settings_editor_always_ask">Always ask</string>

@@ -975,10 +975,25 @@ private fun GalleryApp(
                                                         )
                                                         trashDeleteLauncher.launch(IntentSenderRequest.Builder(delRequest.intentSender).build())
                                                     }.onFailure {
-                                                        pendingTrashMove = null
-                                                        pendingTrashCallback = null
-                                                        viewModel.rollbackTrashMove(moveResult.trashedMedia)
-                                                        Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                        val allDeleted = moveResult.originalMedia.all { item ->
+                                                            runCatching {
+                                                                context.contentResolver.delete(canonicalMediaUri(context, item), null, null) > 0 ||
+                                                                java.io.File(item.path).delete()
+                                                            }.getOrDefault(false)
+                                                        }
+                                                        if (allDeleted) {
+                                                            val delIds = moveResult.originalMedia.map { it.id }.toSet()
+                                                            val delPaths = moveResult.originalMedia.map { it.path }.toSet()
+                                                            viewModel.markMediaDeleted(delIds, delPaths)
+                                                            viewModel.refresh(showLoading = false)
+                                                            onConfirmed?.invoke()
+                                                            Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, moveResult.trashedMedia.size), Toast.LENGTH_SHORT).show()
+                                                        } else {
+                                                            pendingTrashMove = null
+                                                            pendingTrashCallback = null
+                                                            viewModel.rollbackTrashMove(moveResult.trashedMedia)
+                                                            Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1005,10 +1020,25 @@ private fun GalleryApp(
                                                     )
                                                     trashDeleteLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
                                                 }.onFailure {
-                                                    pendingTrashMove = null
-                                                    pendingTrashCallback = null
-                                                    viewModel.rollbackTrashMove(moveResult.trashedMedia)
-                                                    Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                    val allDeleted = moveResult.originalMedia.all { item ->
+                                                        runCatching {
+                                                            context.contentResolver.delete(canonicalMediaUri(context, item), null, null) > 0 ||
+                                                            java.io.File(item.path).delete()
+                                                        }.getOrDefault(false)
+                                                    }
+                                                    if (allDeleted) {
+                                                        val delIds = moveResult.originalMedia.map { it.id }.toSet()
+                                                        val delPaths = moveResult.originalMedia.map { it.path }.toSet()
+                                                        viewModel.markMediaDeleted(delIds, delPaths)
+                                                        viewModel.refresh(showLoading = false)
+                                                        onConfirmed?.invoke()
+                                                        Toast.makeText(context, context.getString(R.string.toast_items_moved_to_trash, moveResult.trashedMedia.size), Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        pendingTrashMove = null
+                                                        pendingTrashCallback = null
+                                                        viewModel.rollbackTrashMove(moveResult.trashedMedia)
+                                                        Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             } else {
                                                 val allDeleted = moveResult.originalMedia.all { item ->
@@ -1083,15 +1113,29 @@ private fun GalleryApp(
                                             runCatching {
                                                 val request = MediaStore.createDeleteRequest(
                                                     context.contentResolver,
-                                                    externalItems.map { canonicalMediaUri(it) }
+                                                    externalItems.map { canonicalMediaUri(context, it) }
                                                 )
                                                 pendingPermanentDeleteMedia = externalItems
                                                 pendingPermanentDeleteCallback = onConfirmed
                                                 deleteLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
                                             }.onFailure {
-                                                pendingPermanentDeleteMedia = null
-                                                pendingPermanentDeleteCallback = null
-                                                Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                val allDeleted = externalItems.all { item ->
+                                                    runCatching {
+                                                        context.contentResolver.delete(canonicalMediaUri(context, item), null, null) > 0 ||
+                                                        java.io.File(item.path).delete()
+                                                    }.getOrDefault(false)
+                                                }
+                                                if (allDeleted) {
+                                                    val delIds = externalItems.map { it.id }.toSet()
+                                                    val delPaths = externalItems.map { it.path }.toSet()
+                                                    viewModel.markMediaDeleted(delIds, delPaths)
+                                                    viewModel.deletePermanently(externalItems)
+                                                    onConfirmed?.invoke()
+                                                } else {
+                                                    pendingPermanentDeleteMedia = null
+                                                    pendingPermanentDeleteCallback = null
+                                                    Toast.makeText(context, context.getString(R.string.toast_could_not_request_removal), Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         } else {
                                             val delIds = externalItems.map { it.id }.toSet()
@@ -1261,16 +1305,38 @@ private fun GalleryApp(
     }
 }
 
+private fun resolveVolumeName(path: String): String {
+    if (path.startsWith("/storage/")) {
+        val parts = path.split('/')
+        if (parts.size > 2) {
+            val candidate = parts[2]
+            if (candidate != "emulated" && candidate != "self") {
+                return candidate
+            }
+        }
+    }
+    return "external"
+}
+
 private fun canonicalMediaUri(context: android.content.Context, item: MediaImage): Uri {
+    if (item.uri.authority == "media") {
+        return item.uri.buildUpon().clearQuery().build()
+    }
+    val vol = if (Build.VERSION.SDK_INT >= 29) resolveVolumeName(item.path) else "external"
+    val baseTable = if (item.isVideo) {
+        if (Build.VERSION.SDK_INT >= 29) MediaStore.Video.Media.getContentUri(vol)
+        else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    } else {
+        if (Build.VERSION.SDK_INT >= 29) MediaStore.Images.Media.getContentUri(vol)
+        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    }
     if (item.id > 0) {
-        return if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
-        else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
+        return ContentUris.withAppendedId(baseTable, item.id)
     }
     if (item.path.isNotBlank()) {
-        val table = if (item.isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         runCatching {
             context.contentResolver.query(
-                table,
+                baseTable,
                 arrayOf(MediaStore.MediaColumns._ID),
                 "${MediaStore.MediaColumns.DATA}=?",
                 arrayOf(item.path),
@@ -1279,7 +1345,7 @@ private fun canonicalMediaUri(context: android.content.Context, item: MediaImage
                 if (cursor.moveToFirst()) {
                     val id = cursor.getLong(0)
                     if (id > 0) {
-                        return ContentUris.withAppendedId(table, id)
+                        return ContentUris.withAppendedId(baseTable, id)
                     }
                 }
             }
@@ -1289,9 +1355,19 @@ private fun canonicalMediaUri(context: android.content.Context, item: MediaImage
 }
 
 private fun canonicalMediaUri(item: MediaImage): Uri {
+    if (item.uri.authority == "media") {
+        return item.uri.buildUpon().clearQuery().build()
+    }
     if (item.id > 0) {
-        return if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
-        else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
+        val vol = if (Build.VERSION.SDK_INT >= 29) resolveVolumeName(item.path) else "external"
+        val baseTable = if (item.isVideo) {
+            if (Build.VERSION.SDK_INT >= 29) MediaStore.Video.Media.getContentUri(vol)
+            else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        } else {
+            if (Build.VERSION.SDK_INT >= 29) MediaStore.Images.Media.getContentUri(vol)
+            else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        return ContentUris.withAppendedId(baseTable, item.id)
     }
     return item.uri
 }

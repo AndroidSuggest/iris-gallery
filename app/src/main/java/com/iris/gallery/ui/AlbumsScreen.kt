@@ -39,6 +39,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.CardDefaults
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
@@ -349,6 +350,7 @@ fun AlbumsGrid(
 
                         Box {
                             AssistChip(
+                                modifier = Modifier.widthIn(max = 145.dp),
                                 onClick = { sortMenuExpanded = true },
                                 label = {
                                     Text(

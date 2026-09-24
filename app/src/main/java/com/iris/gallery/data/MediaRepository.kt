@@ -374,24 +374,32 @@ class MediaRepository(private val context: Context) {
         val srcFile = if (item.path.isNotBlank()) File(item.path) else null
         var renamedPath = item.path
 
-        val canonicalUri = if (item.isVideo) {
+        val canonicalUri = if (item.uri.authority == "media") {
+            item.uri.buildUpon().clearQuery().build()
+        } else if (item.isVideo) {
             ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
         } else {
             ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
         }
 
+        val oldBaseName = item.name.substringBeforeLast('.')
+        val customTitle = libraryPreferences.getCustomTitle(item.id)
+        val hadNoCustomTitle = customTitle == null && (item.title.isBlank() || item.title == oldBaseName)
+        val newBaseName = finalName.substringBeforeLast('.')
+        val updatedTitle = if (hadNoCustomTitle) "" else (customTitle ?: item.title)
+
         var updatedInMediaStore = false
         if (item.id > 0) {
             val values = android.content.ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
+                if (hadNoCustomTitle) {
+                    put(MediaStore.MediaColumns.TITLE, newBaseName)
+                }
             }
             updatedInMediaStore = runCatching {
                 context.contentResolver.update(canonicalUri, values, null, null) > 0
             }.getOrDefault(false)
         }
-
-        val customTitle = libraryPreferences.getCustomTitle(item.id)
-        val updatedTitle = customTitle ?: finalName.substringBeforeLast('.')
 
         if (updatedInMediaStore) {
             if (srcFile != null && srcFile.parentFile != null) {
@@ -401,7 +409,9 @@ class MediaRepository(private val context: Context) {
                 verifiedPathsCache[renamedPath] = System.currentTimeMillis()
                 android.media.MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
             }
-            return@withContext item.copy(name = finalName, path = renamedPath, title = updatedTitle)
+            val updatedItem = item.copy(name = finalName, path = renamedPath, title = updatedTitle)
+            inMemoryCache[item.id] = updatedItem
+            return@withContext updatedItem
         }
 
         // Direct filesystem rename fallback (for Android <= 28 or full storage access)
@@ -418,6 +428,9 @@ class MediaRepository(private val context: Context) {
                 if (item.id > 0) {
                     val values = android.content.ContentValues().apply {
                         put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
+                        if (hadNoCustomTitle) {
+                            put(MediaStore.MediaColumns.TITLE, newBaseName)
+                        }
                         if (android.os.Build.VERSION.SDK_INT <= 28) {
                             put(MediaStore.MediaColumns.DATA, destFile.absolutePath)
                         }
@@ -430,7 +443,9 @@ class MediaRepository(private val context: Context) {
                     null,
                     null
                 )
-                return@withContext item.copy(name = finalName, path = renamedPath, title = updatedTitle)
+                val updatedItem = item.copy(name = finalName, path = renamedPath, title = updatedTitle)
+                inMemoryCache[item.id] = updatedItem
+                return@withContext updatedItem
             }
         }
 
