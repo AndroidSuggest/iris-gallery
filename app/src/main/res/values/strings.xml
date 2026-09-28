@@ -732,4 +732,19 @@
     <string name="settings_system_trash_desc">Sync deleted media with Android system trash (MediaStore). When disabled, media is kept in Iris Gallery\'s private in-app trash.</string>
     <string name="action_hide_in_iris">Hide in Iris Only</string>
     <string name="toast_vault_restore_failed">Failed to restore items. Grant \'All Files Access\' in settings.</string>
+
+    <!-- Wallpaper Settings & Targets -->
+    <string name="wallpaper_choice_title">Set as wallpaper</string>
+    <string name="wallpaper_target_home">Home screen</string>
+    <string name="wallpaper_target_lock">Lock screen</string>
+    <string name="wallpaper_target_both">Home and Lock screens</string>
+    <string name="wallpaper_scroll_title">Wallpaper scrolling</string>
+    <string name="wallpaper_scroll_desc">Scroll wallpaper with home screen pages</string>
+    <string name="wallpaper_more_options">System wallpaper app</string>
+    <string name="wallpaper_more_options_desc">Open in device wallpaper cropper</string>
+    <string name="wallpaper_setting">Applying wallpaper…</string>
+    <string name="wallpaper_set_home_success">Home screen wallpaper updated</string>
+    <string name="wallpaper_set_lock_success">Lock screen wallpaper updated</string>
+    <string name="wallpaper_set_both_success">Wallpaper updated</string>
+    <string name="wallpaper_set_error">Failed to set wallpaper</string>
 </resources>

@@ -220,57 +220,7 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
 }
 
 fun setAsWallpaper(context: Context, image: MediaImage) {
-    val uri = if (image.path.startsWith(context.filesDir.absolutePath)) {
-        androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            java.io.File(image.path)
-        )
-    } else {
-        image.uri
-    }
-    val mimeType = image.mimeType.ifBlank { "image/*" }
-
-    val wallpaperManager = android.app.WallpaperManager.getInstance(context)
-    val cropIntent = runCatching {
-        wallpaperManager.getCropAndSetWallpaperIntent(uri).apply {
-            setDataAndType(uri, mimeType)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            clipData = android.content.ClipData.newUri(context.contentResolver, "wallpaper", uri)
-        }
-    }.getOrNull()
-
-    val attachIntent = Intent(Intent.ACTION_ATTACH_DATA).apply {
-        setDataAndType(uri, mimeType)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        putExtra("mimeType", mimeType)
-        clipData = android.content.ClipData.newUri(context.contentResolver, "wallpaper", uri)
-    }
-
-    val launched = runCatching {
-        if (cropIntent != null && cropIntent.resolveActivity(context.packageManager) != null) {
-            context.startActivity(cropIntent)
-            true
-        } else {
-            val chooser = Intent.createChooser(attachIntent, context.getString(R.string.action_set_as_wallpaper))
-            context.startActivity(chooser)
-            true
-        }
-    }.getOrElse {
-        runCatching {
-            val chooser = Intent.createChooser(attachIntent, context.getString(R.string.action_set_as_wallpaper))
-            context.startActivity(chooser)
-            true
-        }.getOrDefault(false)
-    }
-
-    if (!launched) {
-        android.widget.Toast.makeText(
-            context,
-            context.getString(R.string.action_set_as_wallpaper),
-            android.widget.Toast.LENGTH_SHORT
-        ).show()
-    }
+    launchSystemWallpaperPicker(context, image)
 }
 
 

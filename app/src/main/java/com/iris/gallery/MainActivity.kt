@@ -275,6 +275,7 @@ import com.iris.gallery.ui.EditorScreen
 import com.iris.gallery.ui.EditChoiceBottomSheet
 import com.iris.gallery.ui.launchExternalEditor
 import com.iris.gallery.ui.setAsWallpaper
+import com.iris.gallery.ui.WallpaperChoiceBottomSheet
 import com.iris.gallery.ui.AppLockScreen
 import com.iris.gallery.ui.video.VideoPage
 import com.iris.gallery.ui.video.Media3VideoEngine
@@ -1821,7 +1822,12 @@ private fun GalleryScaffold(
             }
         val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
             type = mimeType
-            if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first()) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            if (uris.size == 1) {
+                putExtra(Intent.EXTRA_STREAM, uris.first())
+                putExtra(Intent.EXTRA_TITLE, selected.first().name)
+            } else {
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            }
             clipData = ClipData.newUri(context.contentResolver, mimeType, uris.first()).apply {
                 uris.drop(1).forEach { addItem(ClipData.Item(it)) }
             }
@@ -4257,6 +4263,7 @@ private fun PhotoViewer(
     var zoomedImageId by remember { mutableStateOf<Long?>(null) }
     var viewerMenuExpanded by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showWallpaperSheet by remember { mutableStateOf(false) }
     var viewerAlbumAction by remember { mutableStateOf<AlbumAction?>(null) }
     val current = images[pagerState.currentPage]
     val currentExif by produceState<ExifMetadata?>(initialValue = null, current.id, current.uri, current.dateTaken, current.description, current.title) {
@@ -4554,7 +4561,7 @@ private fun PhotoViewer(
                                 leadingIcon = { Icon(Icons.Outlined.Wallpaper, null) },
                                 onClick = {
                                     viewerMenuExpanded = false
-                                    setAsWallpaper(context, current)
+                                    showWallpaperSheet = true
                                 }
                             )
                             DropdownMenuItem(
@@ -4884,6 +4891,7 @@ private fun PhotoViewer(
                             type = mimeType
                             val shareUri = getShareUri(context, current)
                             putExtra(Intent.EXTRA_STREAM, shareUri)
+                            putExtra(Intent.EXTRA_TITLE, current.name)
                             clipData = ClipData.newUri(context.contentResolver, mimeType, shareUri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
@@ -5093,6 +5101,12 @@ private fun PhotoViewer(
                 onRename(current, newName)
                 showRenameDialog = false
             }
+        )
+    }
+    if (showWallpaperSheet) {
+        WallpaperChoiceBottomSheet(
+            image = current,
+            onDismiss = { showWallpaperSheet = false }
         )
     }
     if (confirmDelete) {
