@@ -449,6 +449,14 @@ private enum class MediaFormatFilter(val label: String) {
     MOTION("Motion Photos"),
 }
 
+private data class PendingMoveData(
+    val mediaList: List<MediaImage>,
+    val targetDir: java.io.File,
+    val targetAlbumName: String,
+    val alreadyMoved: List<MediaImage>,
+    val callback: (AlbumOperationResult) -> Unit
+)
+
 @Composable
 private fun GalleryApp(
     settings: SettingsState,
@@ -554,6 +562,43 @@ private fun GalleryApp(
     val vaultMedia by viewModel.vaultMedia.collectAsStateWithLifecycle()
     val duplicateState by viewModel.duplicateState.collectAsStateWithLifecycle()
     val coroutineScope = rememberCoroutineScope()
+
+    var pendingMove by remember { mutableStateOf<PendingMoveData?>(null) }
+    val moveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val pending = pendingMove
+        pendingMove = null
+        if (result.resultCode == Activity.RESULT_OK && pending != null) {
+            coroutineScope.launch {
+                val secondResult = viewModel.moveMediaToAlbum(pending.mediaList, pending.targetDir, pending.targetAlbumName)
+                val totalMoved = pending.alreadyMoved + secondResult.movedMedia
+                val totalSuccess = totalMoved.size
+                val totalFailed = secondResult.failedCount
+                val combinedResult = AlbumOperationResult(
+                    successCount = totalSuccess,
+                    failedCount = totalFailed,
+                    targetAlbumName = pending.targetAlbumName,
+                    action = AlbumAction.MOVE,
+                    movedMedia = totalMoved,
+                    successfulSourceMedia = secondResult.successfulSourceMedia,
+                    failedMedia = secondResult.failedMedia
+                )
+                pending.callback(combinedResult)
+            }
+        } else {
+            pending?.let { p ->
+                val fallbackResult = AlbumOperationResult(
+                    successCount = p.alreadyMoved.size,
+                    failedCount = p.mediaList.size,
+                    targetAlbumName = p.targetAlbumName,
+                    action = AlbumAction.MOVE,
+                    movedMedia = p.alreadyMoved,
+                    successfulSourceMedia = emptyList(),
+                    failedMedia = p.mediaList
+                )
+                p.callback(fallbackResult)
+            }
+        }
+    }
 
     var pendingVaultMove by remember { mutableStateOf<com.iris.gallery.data.VaultMoveResult?>(null) }
     val vaultDeleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -710,8 +755,8 @@ private fun GalleryApp(
                 onEdit = { standaloneEditorMedia = it; standaloneExternalMedia = null },
                 onLock = { },
                 onUnlock = { },
-                onMoveToAlbum = { _, _, _ -> },
-                onCopyToAlbum = { _, _, _ -> },
+                onMoveToAlbum = { _, _, _, cb -> cb(AlbumOperationResult(0, 0, "", AlbumAction.MOVE)) },
+                onCopyToAlbum = { _, _, _, cb -> cb(AlbumOperationResult(0, 0, "", AlbumAction.COPY)) },
             )
         } else {
             PermissionScreen { permissionLauncher.launch(permissions) }
@@ -1211,14 +1256,39 @@ private fun GalleryApp(
                         duplicateState = duplicateState,
                         onScanDuplicates = viewModel::scanDuplicates,
                         onCancelDuplicateScan = viewModel::cancelDuplicateScan,
-                        onMoveToAlbum = { media, dir, name ->
+                        onMoveToAlbum = { media, dir, name, onComplete ->
                             coroutineScope.launch {
-                                viewModel.moveMediaToAlbum(media, dir, name)
+                                val firstResult = viewModel.moveMediaToAlbum(media, dir, name)
+                                if (firstResult.failedMedia.isNotEmpty() && Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+                                    val uris = firstResult.failedMedia.filter { it.id > 0 }.map { canonicalMediaUri(context, it) }
+                                    if (uris.isNotEmpty()) {
+                                        runCatching {
+                                            val writeReq = MediaStore.createWriteRequest(context.contentResolver, uris)
+                                            pendingMove = PendingMoveData(
+                                                mediaList = firstResult.failedMedia,
+                                                targetDir = dir,
+                                                targetAlbumName = name,
+                                                alreadyMoved = firstResult.movedMedia,
+                                                callback = onComplete
+                                            )
+                                            moveLauncher.launch(IntentSenderRequest.Builder(writeReq.intentSender).build())
+                                        }.onFailure { e ->
+                                            android.util.Log.e("IrisGallery", "Failed to create write request for move", e)
+                                            pendingMove = null
+                                            onComplete(firstResult)
+                                        }
+                                    } else {
+                                        onComplete(firstResult)
+                                    }
+                                } else {
+                                    onComplete(firstResult)
+                                }
                             }
                         },
-                        onCopyToAlbum = { media, dir, name ->
+                        onCopyToAlbum = { media, dir, name, onComplete ->
                             coroutineScope.launch {
-                                viewModel.copyMediaToAlbum(media, dir, name)
+                                val result = viewModel.copyMediaToAlbum(media, dir, name)
+                                onComplete(result)
                             }
                         },
                         getAlbumDir = viewModel::getAlbumDirectory,
@@ -1541,8 +1611,8 @@ private fun GalleryScaffold(
     onRestore: (List<MediaImage>) -> Unit,
     onDeletePermanently: (List<MediaImage>, onConfirmed: (() -> Unit)?) -> Unit,
     onEditMetadata: (MediaImage, ExifEditRequest, (MediaImage?) -> Unit) -> Unit = { _, _, _ -> },
-    onMoveToAlbum: (List<MediaImage>, java.io.File, String) -> Unit,
-    onCopyToAlbum: (List<MediaImage>, java.io.File, String) -> Unit,
+    onMoveToAlbum: (List<MediaImage>, java.io.File, String, (AlbumOperationResult) -> Unit) -> Unit,
+    onCopyToAlbum: (List<MediaImage>, java.io.File, String, (AlbumOperationResult) -> Unit) -> Unit,
     getAlbumDir: (MediaAlbum) -> java.io.File,
     createAlbumDir: (String) -> java.io.File,
     duplicateState: DuplicateScanState,
@@ -2958,13 +3028,24 @@ private fun GalleryScaffold(
                 val targetDir = getAlbumDir(album)
                 albumPickerAction = null
                 pendingAlbumMedia = null
-                clearSelection()
                 if (action == AlbumAction.MOVE) {
-                    trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, toProcess.size, album.name)
-                    onMoveToAlbum(toProcess, targetDir, album.name)
+                    onMoveToAlbum(toProcess, targetDir, album.name) { result ->
+                        if (result.successCount > 0) {
+                            clearSelection()
+                            trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, result.successCount, album.name)
+                        } else {
+                            Toast.makeText(context, R.string.toast_could_not_move_media, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 } else {
-                    trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, toProcess.size, album.name)
-                    onCopyToAlbum(toProcess, targetDir, album.name)
+                    onCopyToAlbum(toProcess, targetDir, album.name) { result ->
+                        if (result.successCount > 0) {
+                            clearSelection()
+                            trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, result.successCount, album.name)
+                        } else {
+                            Toast.makeText(context, R.string.toast_could_not_copy_media, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             },
             onCreateAlbum = { newName ->
@@ -2973,13 +3054,24 @@ private fun GalleryScaffold(
                 val targetDir = createAlbumDir(newName)
                 albumPickerAction = null
                 pendingAlbumMedia = null
-                clearSelection()
                 if (action == AlbumAction.MOVE) {
-                    trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, toProcess.size, newName)
-                    onMoveToAlbum(toProcess, targetDir, newName)
+                    onMoveToAlbum(toProcess, targetDir, newName) { result ->
+                        if (result.successCount > 0) {
+                            clearSelection()
+                            trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, result.successCount, newName)
+                        } else {
+                            Toast.makeText(context, R.string.toast_could_not_move_media, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 } else {
-                    trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, toProcess.size, newName)
-                    onCopyToAlbum(toProcess, targetDir, newName)
+                    onCopyToAlbum(toProcess, targetDir, newName) { result ->
+                        if (result.successCount > 0) {
+                            clearSelection()
+                            trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, result.successCount, newName)
+                        } else {
+                            Toast.makeText(context, R.string.toast_could_not_copy_media, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             }
         )
@@ -3051,14 +3143,26 @@ private fun GalleryScaffold(
             onEdit = { editorImage = it; externalMedia = null },
             onLock = { },
             onUnlock = { },
-            onMoveToAlbum = { mediaList, dir, name ->
-                trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, mediaList.size, name)
-                onMoveToAlbum(mediaList, dir, name)
-                externalMedia = null
+            onMoveToAlbum = { mediaList, dir, name, onDone ->
+                onMoveToAlbum(mediaList, dir, name) { result ->
+                    if (result.successCount > 0) {
+                        trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, result.successCount, name)
+                        externalMedia = null
+                    } else {
+                        Toast.makeText(context, R.string.toast_could_not_move_media, Toast.LENGTH_SHORT).show()
+                    }
+                    onDone(result)
+                }
             },
-            onCopyToAlbum = { mediaList, dir, name ->
-                trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, mediaList.size, name)
-                onCopyToAlbum(mediaList, dir, name)
+            onCopyToAlbum = { mediaList, dir, name, onDone ->
+                onCopyToAlbum(mediaList, dir, name) { result ->
+                    if (result.successCount > 0) {
+                        trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, result.successCount, name)
+                    } else {
+                        Toast.makeText(context, R.string.toast_could_not_copy_media, Toast.LENGTH_SHORT).show()
+                    }
+                    onDone(result)
+                }
             },
             getAlbumDir = getAlbumDir,
             createAlbumDir = createAlbumDir,
@@ -3149,13 +3253,25 @@ private fun GalleryScaffold(
             onEdit = { editorImage = it; selectedId = null },
             onLock = { onLockMedia(listOf(it)); selectedId = null },
             onUnlock = { onUnlockMedia(listOf(it)); selectedId = null },
-            onMoveToAlbum = { mediaList, dir, name ->
-                trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, mediaList.size, name)
-                onMoveToAlbum(mediaList, dir, name)
+            onMoveToAlbum = { mediaList, dir, name, onDone ->
+                onMoveToAlbum(mediaList, dir, name) { result ->
+                    if (result.successCount > 0) {
+                        trashFeedback = TrashFeedback(TrashFeedbackType.MOVED_TO_ALBUM, result.successCount, name)
+                    } else {
+                        Toast.makeText(context, R.string.toast_could_not_move_media, Toast.LENGTH_SHORT).show()
+                    }
+                    onDone(result)
+                }
             },
-            onCopyToAlbum = { mediaList, dir, name ->
-                trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, mediaList.size, name)
-                onCopyToAlbum(mediaList, dir, name)
+            onCopyToAlbum = { mediaList, dir, name, onDone ->
+                onCopyToAlbum(mediaList, dir, name) { result ->
+                    if (result.successCount > 0) {
+                        trashFeedback = TrashFeedback(TrashFeedbackType.COPIED_TO_ALBUM, result.successCount, name)
+                    } else {
+                        Toast.makeText(context, R.string.toast_could_not_copy_media, Toast.LENGTH_SHORT).show()
+                    }
+                    onDone(result)
+                }
             },
             getAlbumDir = getAlbumDir,
             createAlbumDir = createAlbumDir,
@@ -4069,8 +4185,8 @@ private fun PhotoViewer(
     onEdit: (MediaImage) -> Unit,
     onLock: (MediaImage) -> Unit,
     onUnlock: (MediaImage) -> Unit = {},
-    onMoveToAlbum: (List<MediaImage>, File, String) -> Unit = { _, _, _ -> },
-    onCopyToAlbum: (List<MediaImage>, File, String) -> Unit = { _, _, _ -> },
+    onMoveToAlbum: (List<MediaImage>, File, String, (AlbumOperationResult) -> Unit) -> Unit = { _, _, _, _ -> },
+    onCopyToAlbum: (List<MediaImage>, File, String, (AlbumOperationResult) -> Unit) -> Unit = { _, _, _, _ -> },
     getAlbumDir: (MediaAlbum) -> File = { File("") },
     createAlbumDir: (String) -> File = { File("") },
 ) {
@@ -5074,20 +5190,26 @@ private fun PhotoViewer(
                 val targetDir = getAlbumDir(album)
                 viewerAlbumAction = null
                 if (action == AlbumAction.MOVE) {
-                    onMoveToAlbum(listOf(current), targetDir, album.name)
-                    handleClose()
+                    onMoveToAlbum(listOf(current), targetDir, album.name) { result ->
+                        if (result.successCount > 0) {
+                            handleClose()
+                        }
+                    }
                 } else {
-                    onCopyToAlbum(listOf(current), targetDir, album.name)
+                    onCopyToAlbum(listOf(current), targetDir, album.name) { }
                 }
             },
             onCreateAlbum = { newName ->
                 val targetDir = createAlbumDir(newName)
                 viewerAlbumAction = null
                 if (action == AlbumAction.MOVE) {
-                    onMoveToAlbum(listOf(current), targetDir, newName)
-                    handleClose()
+                    onMoveToAlbum(listOf(current), targetDir, newName) { result ->
+                        if (result.successCount > 0) {
+                            handleClose()
+                        }
+                    }
                 } else {
-                    onCopyToAlbum(listOf(current), targetDir, newName)
+                    onCopyToAlbum(listOf(current), targetDir, newName) { }
                 }
             }
         )

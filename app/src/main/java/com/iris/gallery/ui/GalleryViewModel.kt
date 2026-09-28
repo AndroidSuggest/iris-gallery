@@ -128,12 +128,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     suspend fun moveMediaToAlbum(mediaList: List<MediaImage>, targetDir: File, targetAlbumName: String): AlbumOperationResult {
         val result = albumRepository.moveMedia(mediaList, targetDir, targetAlbumName)
         if (result.successCount > 0) {
-            val movedOldIds = mediaList.map { it.id }.toSet()
-            val movedOldPaths = mediaList.map { it.path }.toSet()
-            mediaList.forEach { item ->
+            val movedOldIds = result.successfulSourceMedia.map { it.id }.toSet()
+            val movedOldPaths = result.successfulSourceMedia.map { it.path }.toSet()
+            val newIds = result.movedMedia.map { it.id }.toSet()
+            result.successfulSourceMedia.forEach { item ->
                 ThumbnailCache.remove(item.id)
             }
-            repository.markMovedOrDeleted(movedOldIds, movedOldPaths)
+            // Only mark IDs in recentMovedOrDeletedIds if the row was truly deleted/recreated with a new ID.
+            // In-place MediaStore RELATIVE_PATH moves preserve the item's row ID, so suppressing it would hide the moved photo!
+            val trulyDeletedOldIds = movedOldIds.filterNot { it in newIds }.toSet()
+            repository.markMovedOrDeleted(trulyDeletedOldIds, movedOldPaths)
             val currentImages = _uiState.value.images
             val remainingImages = currentImages.filterNot { it.id in movedOldIds || it.path in movedOldPaths }
             val updatedImages = (remainingImages + result.movedMedia).sortedWith(
@@ -147,7 +151,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     suspend fun copyMediaToAlbum(mediaList: List<MediaImage>, targetDir: File, targetAlbumName: String): AlbumOperationResult {
         val result = albumRepository.copyMedia(mediaList, targetDir, targetAlbumName)
-        refresh()
+        if (result.successCount > 0) {
+            val currentImages = _uiState.value.images
+            val updatedImages = (currentImages + result.movedMedia).distinctBy { it.path }.sortedWith(
+                compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.id }
+            )
+            _uiState.value = _uiState.value.copy(images = updatedImages)
+        }
+        refresh(showLoading = false)
         return result
     }
 

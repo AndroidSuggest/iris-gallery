@@ -382,19 +382,10 @@ class MediaRepository(private val context: Context) {
             ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
         }
 
-        val oldBaseName = item.name.substringBeforeLast('.')
-        val customTitle = libraryPreferences.getCustomTitle(item.id)
-        val hadNoCustomTitle = customTitle == null && (item.title.isBlank() || item.title == oldBaseName)
-        val newBaseName = finalName.substringBeforeLast('.')
-        val updatedTitle = if (hadNoCustomTitle) "" else (customTitle ?: item.title)
-
         var updatedInMediaStore = false
         if (item.id > 0) {
             val values = android.content.ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
-                if (hadNoCustomTitle) {
-                    put(MediaStore.MediaColumns.TITLE, newBaseName)
-                }
             }
             updatedInMediaStore = runCatching {
                 context.contentResolver.update(canonicalUri, values, null, null) > 0
@@ -402,35 +393,76 @@ class MediaRepository(private val context: Context) {
         }
 
         if (updatedInMediaStore) {
-            if (srcFile != null && srcFile.parentFile != null) {
-                val destFile = File(srcFile.parentFile, finalName)
-                renamedPath = destFile.absolutePath
-                verifiedPathsCache.remove(item.path)
-                verifiedPathsCache[renamedPath] = System.currentTimeMillis()
-                android.media.MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
+            val (actualName, actualPath) = runCatching {
+                context.contentResolver.query(
+                    canonicalUri,
+                    arrayOf(
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.DATA,
+                        if (android.os.Build.VERSION.SDK_INT >= 29) MediaStore.MediaColumns.RELATIVE_PATH else MediaStore.MediaColumns.DATA
+                    ),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameCol = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                        val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                        val relCol = if (android.os.Build.VERSION.SDK_INT >= 29) cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH) else -1
+                        val resolvedName = if (nameCol >= 0) cursor.getString(nameCol) else null
+                        val rawData = if (dataCol >= 0) cursor.getString(dataCol) else null
+                        val relPath = if (relCol >= 0) cursor.getString(relCol) else null
+                        val resolvedPath = when {
+                            !rawData.isNullOrBlank() -> rawData
+                            !relPath.isNullOrBlank() && !resolvedName.isNullOrBlank() -> "/storage/emulated/0/$relPath$resolvedName"
+                            else -> null
+                        }
+                        Pair(resolvedName, resolvedPath)
+                    } else Pair(null, null)
+                }
+            }.getOrNull() ?: Pair(null, null)
+
+            val resolvedFinalName = actualName ?: finalName
+            renamedPath = actualPath ?: if (srcFile != null && srcFile.parentFile != null) {
+                File(srcFile.parentFile, resolvedFinalName).absolutePath
+            } else {
+                item.path
             }
-            val updatedItem = item.copy(name = finalName, path = renamedPath, title = updatedTitle)
+
+            verifiedPathsCache.remove(item.path)
+            verifiedPathsCache[renamedPath] = System.currentTimeMillis()
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(renamedPath), null, null)
+
+            val updatedItem = item.copy(name = resolvedFinalName, path = renamedPath)
             inMemoryCache[item.id] = updatedItem
             return@withContext updatedItem
         }
 
         // Direct filesystem rename fallback (for Android <= 28 or full storage access)
-        if (srcFile != null && srcFile.exists()) {
-            val destFile = File(srcFile.parentFile, finalName)
+        if (srcFile != null && srcFile.exists() && srcFile.parentFile != null) {
+            val parent = srcFile.parentFile!!
+            var destFile = File(parent, finalName)
+            if (destFile.exists() && destFile.absolutePath != srcFile.absolutePath) {
+                val base = finalName.substringBeforeLast('.')
+                val ext = if (finalName.contains('.')) ".${finalName.substringAfterLast('.')}" else ""
+                var index = 1
+                while (destFile.exists()) {
+                    destFile = File(parent, "$base ($index)$ext")
+                    index++
+                }
+            }
             val lastModified = srcFile.lastModified()
             val renamed = runCatching { srcFile.renameTo(destFile) }.getOrDefault(false)
             if (renamed) {
                 if (lastModified > 0) destFile.setLastModified(lastModified)
                 renamedPath = destFile.absolutePath
+                val resolvedFinalName = destFile.name
                 verifiedPathsCache.remove(item.path)
                 verifiedPathsCache[renamedPath] = System.currentTimeMillis()
 
                 if (item.id > 0) {
                     val values = android.content.ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
-                        if (hadNoCustomTitle) {
-                            put(MediaStore.MediaColumns.TITLE, newBaseName)
-                        }
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, resolvedFinalName)
                         if (android.os.Build.VERSION.SDK_INT <= 28) {
                             put(MediaStore.MediaColumns.DATA, destFile.absolutePath)
                         }
@@ -443,7 +475,7 @@ class MediaRepository(private val context: Context) {
                     null,
                     null
                 )
-                val updatedItem = item.copy(name = finalName, path = renamedPath, title = updatedTitle)
+                val updatedItem = item.copy(name = resolvedFinalName, path = renamedPath)
                 inMemoryCache[item.id] = updatedItem
                 return@withContext updatedItem
             }

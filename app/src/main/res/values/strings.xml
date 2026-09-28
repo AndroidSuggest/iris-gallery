@@ -635,6 +635,8 @@
     <string name="toast_moved_to_album_multiple">Moved %1$d items to %2$s</string>
     <string name="toast_copied_to_album_single">Copied item to %1$s</string>
     <string name="toast_copied_to_album_multiple">Copied %1$d items to %2$s</string>
+    <string name="toast_could_not_move_media">Could not move items to album</string>
+    <string name="toast_could_not_copy_media">Could not copy items to album</string>
 
     <!-- File Rename & Playback -->
     <string name="action_rename">Rename</string>
