@@ -1809,10 +1809,22 @@ private fun GalleryScaffold(
         val selected = activeMedia.filter { it.id in selectedIds }
         if (selected.isEmpty()) return
         val uris = ArrayList(selected.map { getShareUri(context, it) })
+        val mimeType = selected.map { it.mimeType.ifBlank { if (it.isVideo) "video/*" else "image/*" } }
+            .distinct()
+            .let { mimeTypes ->
+                when {
+                    mimeTypes.size == 1 -> mimeTypes.first()
+                    mimeTypes.all { it.startsWith("image/") } -> "image/*"
+                    mimeTypes.all { it.startsWith("video/") } -> "video/*"
+                    else -> "*/*"
+                }
+            }
         val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
-            type = if (uris.size == 1) selected.first().mimeType.ifBlank { "*/*" } else "*/*"
-            if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first())
-            else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            type = mimeType
+            if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first()) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            clipData = ClipData.newUri(context.contentResolver, mimeType, uris.first()).apply {
+                uris.drop(1).forEach { addItem(ClipData.Item(it)) }
+            }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
@@ -4868,9 +4880,11 @@ private fun PhotoViewer(
                         modifier = Modifier.weight(1f),
                     ) {
                         val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = if (current.isVideo) "video/*" else "image/*"
+                            val mimeType = current.mimeType.ifBlank { if (current.isVideo) "video/*" else "image/*" }
+                            type = mimeType
                             val shareUri = getShareUri(context, current)
                             putExtra(Intent.EXTRA_STREAM, shareUri)
+                            clipData = ClipData.newUri(context.contentResolver, mimeType, shareUri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
