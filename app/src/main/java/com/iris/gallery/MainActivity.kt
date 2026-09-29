@@ -43,6 +43,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.automirrored.outlined.Comment
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -214,6 +216,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1541,17 +1546,20 @@ private fun BoxScope.IrisPullToRefreshIndicator(
         } else if (wasRefreshing) {
             wasRefreshing = false
             isDismissingInPlace = true
-            kotlinx.coroutines.coroutineScope {
-                launch {
-                    dismissAlpha.animateTo(0f, tween(220, easing = LinearOutSlowInEasing))
+            try {
+                kotlinx.coroutines.coroutineScope {
+                    launch {
+                        dismissAlpha.animateTo(0f, tween(220, easing = LinearOutSlowInEasing))
+                    }
+                    launch {
+                        dismissScale.animateTo(0.65f, tween(220, easing = LinearOutSlowInEasing))
+                    }
                 }
-                launch {
-                    dismissScale.animateTo(0.65f, tween(220, easing = LinearOutSlowInEasing))
-                }
+            } finally {
+                isDismissingInPlace = false
+                dismissAlpha.snapTo(1f)
+                dismissScale.snapTo(1f)
             }
-            isDismissingInPlace = false
-            dismissAlpha.snapTo(1f)
-            dismissScale.snapTo(1f)
         }
     }
 
@@ -2293,7 +2301,7 @@ private fun GalleryScaffold(
       }
       when {
         loading && images.isEmpty() -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        error != null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text(error) }
+        error != null && images.isEmpty() -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { Text(error) }
         else -> HorizontalPager(
           state = tabPagerState,
           beyondViewportPageCount = 3,
@@ -2303,11 +2311,23 @@ private fun GalleryScaffold(
           when (page) {
             0 -> {
               val pullRefreshState0 = rememberPullToRefreshState()
+              val fastRefreshConnection0 = remember(pullRefreshState0, loading, onRefresh) {
+                object : NestedScrollConnection {
+                  override suspend fun onPreFling(available: Velocity): Velocity {
+                    if (available.y > 400f && pullRefreshState0.distanceFraction in 0.01f..0.999f && !loading) {
+                      pullRefreshState0.animateToThreshold()
+                      onRefresh()
+                      return Velocity(0f, available.y)
+                    }
+                    return Velocity.Zero
+                  }
+                }
+              }
               PullToRefreshBox(
                 state = pullRefreshState0,
                 isRefreshing = loading,
                 onRefresh = onRefresh,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().nestedScroll(fastRefreshConnection0),
                 indicator = {
                   IrisPullToRefreshIndicator(
                     state = pullRefreshState0,
@@ -2315,35 +2335,49 @@ private fun GalleryScaffold(
                   )
                 }
               ) {
-                if (displayedPhotos.isNotEmpty()) PhotoGrid(
-                  displayedPhotos, padding, photoGridState, cellSize = photoCellSize, onCellSizeChange = onCellSizeChange,
-                  showTimeline = settings.showTimelineHeaders && fileSearchQuery.isBlank(),
-                  timelineDateFormat = settings.timelineDateFormat,
-                  customTimelineDateFormat = settings.customTimelineDateFormat,
-                  useRelativeDates = settings.useRelativeDates,
-                  showDayOfWeek = settings.showDayOfWeek,
-                  abbreviateDayOfWeek = settings.abbreviateDayOfWeek,
-                  smartYearHiding = settings.smartYearHiding,
-                  cornerStyle = settings.cornerStyle,
-                  gridSpacing = settings.gridSpacing,
-                  showVideoDuration = settings.showVideoDurationBadge,
-                  showFormatBadge = settings.showMediaFormatBadge,
-                  selectedIds = selectedIds,
-                  onToggleSelection = if (onPick == null) ::toggleSelection else null,
-                  onSetSelection = if (onPick == null) ::setSelection else null,
-                  onSetDateSelection = if (onPick == null) ::setDateSelection else null,
-                ) { if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedPhotos; selectedId = it.id } }
-                else if (fileSearchQuery.isNotBlank()) EmptyState(stringResource(R.string.empty_search_files, fileSearchQuery), padding)
-                else EmptyState(stringResource(R.string.empty_photos), padding)
+                CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+                  if (displayedPhotos.isNotEmpty()) PhotoGrid(
+                    displayedPhotos, padding, photoGridState, cellSize = photoCellSize, onCellSizeChange = onCellSizeChange,
+                    showTimeline = settings.showTimelineHeaders && fileSearchQuery.isBlank(),
+                    timelineDateFormat = settings.timelineDateFormat,
+                    customTimelineDateFormat = settings.customTimelineDateFormat,
+                    useRelativeDates = settings.useRelativeDates,
+                    showDayOfWeek = settings.showDayOfWeek,
+                    abbreviateDayOfWeek = settings.abbreviateDayOfWeek,
+                    smartYearHiding = settings.smartYearHiding,
+                    cornerStyle = settings.cornerStyle,
+                    gridSpacing = settings.gridSpacing,
+                    showVideoDuration = settings.showVideoDurationBadge,
+                    showFormatBadge = settings.showMediaFormatBadge,
+                    selectedIds = selectedIds,
+                    onToggleSelection = if (onPick == null) ::toggleSelection else null,
+                    onSetSelection = if (onPick == null) ::setSelection else null,
+                    onSetDateSelection = if (onPick == null) ::setDateSelection else null,
+                  ) { if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedPhotos; selectedId = it.id } }
+                  else if (fileSearchQuery.isNotBlank()) EmptyState(stringResource(R.string.empty_search_files, fileSearchQuery), padding)
+                  else EmptyState(stringResource(R.string.empty_photos), padding)
+                }
               }
             }
             1 -> {
               val pullRefreshState1 = rememberPullToRefreshState()
+              val fastRefreshConnection1 = remember(pullRefreshState1, loading, onRefresh) {
+                object : NestedScrollConnection {
+                  override suspend fun onPreFling(available: Velocity): Velocity {
+                    if (available.y > 400f && pullRefreshState1.distanceFraction in 0.01f..0.999f && !loading) {
+                      pullRefreshState1.animateToThreshold()
+                      onRefresh()
+                      return Velocity(0f, available.y)
+                    }
+                    return Velocity.Zero
+                  }
+                }
+              }
               PullToRefreshBox(
                 state = pullRefreshState1,
                 isRefreshing = loading,
                 onRefresh = onRefresh,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().nestedScroll(fastRefreshConnection1),
                 indicator = {
                   IrisPullToRefreshIndicator(
                     state = pullRefreshState1,
@@ -2351,55 +2385,57 @@ private fun GalleryScaffold(
                   )
                 }
               ) {
-              if (selectedAlbum != null) {
-                if (displayedAlbumPhotos.isNotEmpty()) PhotoGrid(
-                  displayedAlbumPhotos, padding, albumPhotoGridState, cellSize = photoCellSize, onCellSizeChange = onCellSizeChange,
-                  showTimeline = settings.showTimelineHeaders && fileSearchQuery.isBlank(),
-                  timelineDateFormat = settings.timelineDateFormat,
-                  customTimelineDateFormat = settings.customTimelineDateFormat,
-                  useRelativeDates = settings.useRelativeDates,
-                  showDayOfWeek = settings.showDayOfWeek,
-                  abbreviateDayOfWeek = settings.abbreviateDayOfWeek,
-                  smartYearHiding = settings.smartYearHiding,
-                  cornerStyle = settings.cornerStyle,
-                  gridSpacing = settings.gridSpacing,
-                  showVideoDuration = settings.showVideoDurationBadge,
-                  showFormatBadge = settings.showMediaFormatBadge,
-                  selectedIds = selectedIds, onToggleSelection = if (onPick == null) ::toggleSelection else null,
-                  onSetSelection = if (onPick == null) ::setSelection else null,
-                  onSetDateSelection = if (onPick == null) ::setDateSelection else null,
-                ) { if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedAlbumPhotos; selectedId = it.id } }
-                else if (fileSearchQuery.isNotBlank()) EmptyState(stringResource(R.string.empty_search_files, fileSearchQuery), padding)
-                else EmptyState(stringResource(R.string.empty_photos), padding)
-              } else AlbumsGrid(
-                images = images,
-                padding = padding,
-                state = albumGridState,
-                cellSize = customAlbumCellSize,
-                onCellSizeChange = onAlbumCellSizeChange,
-                cornerStyle = settings.cornerStyle,
-                gridSpacing = settings.gridSpacing,
-                showCount = settings.showAlbumCount,
-                pinned = pinnedAlbums,
-                covers = albumCovers,
-                sort = albumSort,
-                customOrder = albumOrder,
-                isEditingOrder = isEditingAlbumOrder && destination == 1 && selectedAlbumId == null && albumSort == com.iris.gallery.data.AlbumSort.CUSTOM,
-                onTogglePinned = onTogglePinnedAlbum,
-                onSortChanged = onSetAlbumSort,
-                onOrderChanged = onSetAlbumOrder,
-                onLockAlbum = { album -> onLockMedia(album.images) },
-                onExcludeFolder = { album ->
-                    val samplePath = album.images.firstOrNull { it.path.isNotBlank() }?.path.orEmpty()
-                    val folderPath = if (samplePath.contains('/')) samplePath.substringBeforeLast('/') else ""
-                    if (folderPath.isNotBlank()) {
-                        onAddExcludedFolder(folderPath)
-                        Toast.makeText(context, R.string.toast_folder_excluded, Toast.LENGTH_SHORT).show()
-                    }
-                },
-              ) { selectedAlbumId = it.id }
+                CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+                  if (selectedAlbum != null) {
+                    if (displayedAlbumPhotos.isNotEmpty()) PhotoGrid(
+                      displayedAlbumPhotos, padding, albumPhotoGridState, cellSize = photoCellSize, onCellSizeChange = onCellSizeChange,
+                      showTimeline = settings.showTimelineHeaders && fileSearchQuery.isBlank(),
+                      timelineDateFormat = settings.timelineDateFormat,
+                      customTimelineDateFormat = settings.customTimelineDateFormat,
+                      useRelativeDates = settings.useRelativeDates,
+                      showDayOfWeek = settings.showDayOfWeek,
+                      abbreviateDayOfWeek = settings.abbreviateDayOfWeek,
+                      smartYearHiding = settings.smartYearHiding,
+                      cornerStyle = settings.cornerStyle,
+                      gridSpacing = settings.gridSpacing,
+                      showVideoDuration = settings.showVideoDurationBadge,
+                      showFormatBadge = settings.showMediaFormatBadge,
+                      selectedIds = selectedIds, onToggleSelection = if (onPick == null) ::toggleSelection else null,
+                      onSetSelection = if (onPick == null) ::setSelection else null,
+                      onSetDateSelection = if (onPick == null) ::setDateSelection else null,
+                    ) { if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedAlbumPhotos; selectedId = it.id } }
+                    else if (fileSearchQuery.isNotBlank()) EmptyState(stringResource(R.string.empty_search_files, fileSearchQuery), padding)
+                    else EmptyState(stringResource(R.string.empty_photos), padding)
+                  } else AlbumsGrid(
+                    images = images,
+                    padding = padding,
+                    state = albumGridState,
+                    cellSize = customAlbumCellSize,
+                    onCellSizeChange = onAlbumCellSizeChange,
+                    cornerStyle = settings.cornerStyle,
+                    gridSpacing = settings.gridSpacing,
+                    showCount = settings.showAlbumCount,
+                    pinned = pinnedAlbums,
+                    covers = albumCovers,
+                    sort = albumSort,
+                    customOrder = albumOrder,
+                    isEditingOrder = isEditingAlbumOrder && destination == 1 && selectedAlbumId == null && albumSort == com.iris.gallery.data.AlbumSort.CUSTOM,
+                    onTogglePinned = onTogglePinnedAlbum,
+                    onSortChanged = onSetAlbumSort,
+                    onOrderChanged = onSetAlbumOrder,
+                    onLockAlbum = { album -> onLockMedia(album.images) },
+                    onExcludeFolder = { album ->
+                        val samplePath = album.images.firstOrNull { it.path.isNotBlank() }?.path.orEmpty()
+                        val folderPath = if (samplePath.contains('/')) samplePath.substringBeforeLast('/') else ""
+                        if (folderPath.isNotBlank()) {
+                            onAddExcludedFolder(folderPath)
+                            Toast.makeText(context, R.string.toast_folder_excluded, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                  ) { selectedAlbumId = it.id }
+                }
+              }
             }
-          }
             else -> {
                 if (page == 3) {
                     when (librarySection) {

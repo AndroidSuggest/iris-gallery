@@ -1,0 +1,7 @@
+• Pull-to-Refresh Gesture Sync: Added fast swipe detection and decoupled overscroll at the top so quick downward flicks refresh reliably (#123)
+• Refresh Indicator Fix: Guaranteed dismissal cleanup in a finally block to eliminate frozen spinning indicators (#158)
+• Unicode & Arabic EXIF Support: Added smart charset detection (UTF-8, Windows-1256, ISO-8859-6, UTF-16 with BOM) preventing Arabic comments from displaying as question marks or Chinese characters
+• Wallpaper Options: Added target picker for Home screen, Lock screen, or Both, with a wallpaper scrolling parallax toggle (#146, #154)
+• Album Move Safety: Scoped Storage in-place moves with write consent dialogs, strict approval gating, and ID retention fixes (#152)
+• Share Sheet Previews: Rich image and video thumbnail previews with filename header in Android system sharesheet (#124, thanks @111306)
+• Rename Sync: Prevented metadata title writes during file renames and resolved duplicate filename collisions (#150)

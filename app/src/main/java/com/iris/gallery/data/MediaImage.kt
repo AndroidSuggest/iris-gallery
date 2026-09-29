@@ -193,6 +193,110 @@ fun cleanUserComment(raw: String?): String? {
     return text.ifBlank { null }
 }
 
+fun decodeBytesSmartly(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size - offset): String {
+    if (length <= 0 || offset < 0 || offset + length > bytes.size) return ""
+    val slice = if (offset == 0 && length == bytes.size) bytes else bytes.copyOfRange(offset, offset + length)
+    if (slice.isEmpty()) return ""
+
+    var end = slice.size
+    while (end > 0 && slice[end - 1] == 0.toByte()) {
+        end--
+    }
+    if (end == 0) return ""
+    val trimmed = if (end == slice.size) slice else slice.copyOfRange(0, end)
+
+    // 1. Try strict UTF-8 decoding
+    try {
+        val decoder = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+        val charBuffer = decoder.decode(java.nio.ByteBuffer.wrap(trimmed))
+        val str = charBuffer.toString()
+        val hasControl = str.any { it < ' ' && it != '\n' && it != '\r' && it != '\t' }
+        if (str.isNotBlank() && !hasControl) return str
+    } catch (_: Exception) {}
+
+    // 2. Try Windows-1256 (standard Arabic Windows codepage)
+    try {
+        val arabicCharset = java.nio.charset.Charset.forName("windows-1256")
+        val str = String(trimmed, arabicCharset)
+        if (str.any { it in '\u0600'..'\u06FF' } && !str.any { it < ' ' && it != '\n' && it != '\r' && it != '\t' }) return str
+    } catch (_: Exception) {}
+
+    // 3. Try ISO-8859-6 (Arabic ISO)
+    try {
+        val isoArabic = java.nio.charset.Charset.forName("ISO-8859-6")
+        val str = String(trimmed, isoArabic)
+        if (str.any { it in '\u0600'..'\u06FF' } && !str.any { it < ' ' && it != '\n' && it != '\r' && it != '\t' }) return str
+    } catch (_: Exception) {}
+
+    // 4. Try UTF-16 with Arabic if even length
+    if (trimmed.size >= 2 && trimmed.size % 2 == 0) {
+        val evenArabic = (0 until trimmed.size step 2).count { trimmed[it] in 0x06..0x08 }
+        val oddArabic = (1 until trimmed.size step 2).count { trimmed[it] in 0x06..0x08 }
+        if (evenArabic > 0 && evenArabic >= oddArabic) {
+            return String(trimmed, java.nio.charset.StandardCharsets.UTF_16BE).trim('\u0000')
+        }
+        if (oddArabic > 0 && oddArabic > evenArabic) {
+            return String(trimmed, java.nio.charset.StandardCharsets.UTF_16LE).trim('\u0000')
+        }
+    }
+
+    // 5. Fallback to UTF-8
+    return String(trimmed, java.nio.charset.StandardCharsets.UTF_8).replace("\u0000", "")
+}
+
+fun decodeUnicodePayload(bytes: ByteArray, offset: Int, length: Int): String {
+    if (length <= 0 || offset < 0 || offset + length > bytes.size) return ""
+    val payload = bytes.copyOfRange(offset, offset + length)
+
+    // 1. Check BOM
+    if (payload.size >= 2) {
+        if (payload[0] == 0xFE.toByte() && payload[1] == 0xFF.toByte()) {
+            return String(payload, 2, payload.size - 2, java.nio.charset.StandardCharsets.UTF_16BE).trim('\u0000')
+        }
+        if (payload[0] == 0xFF.toByte() && payload[1] == 0xFE.toByte()) {
+            return String(payload, 2, payload.size - 2, java.nio.charset.StandardCharsets.UTF_16LE).trim('\u0000')
+        }
+    }
+
+    // 2. Check if even or odd bytes indicate UTF-16 (Arabic or Latin)
+    if (payload.size >= 2 && payload.size % 2 == 0) {
+        // Arabic block in Unicode is U+0600..U+06FF (high byte is 0x06, or extended 0x07, 0x08)
+        val evenArabic = (0 until payload.size step 2).count { payload[it] in 0x06..0x08 }
+        val oddArabic = (1 until payload.size step 2).count { payload[it] in 0x06..0x08 }
+        if (evenArabic > 0 && evenArabic >= oddArabic) {
+            return String(payload, java.nio.charset.StandardCharsets.UTF_16BE).trim('\u0000')
+        }
+        if (oddArabic > 0 && oddArabic > evenArabic) {
+            return String(payload, java.nio.charset.StandardCharsets.UTF_16LE).trim('\u0000')
+        }
+
+        // ASCII in UTF-16 has alternating 0x00 bytes
+        val evenZeros = (0 until payload.size step 2).count { payload[it] == 0.toByte() }
+        val oddZeros = (1 until payload.size step 2).count { payload[it] == 0.toByte() }
+        val pairs = payload.size / 2
+        if (evenZeros > pairs * 0.3f && evenZeros > oddZeros) {
+            return String(payload, java.nio.charset.StandardCharsets.UTF_16BE).trim('\u0000')
+        }
+        if (oddZeros > pairs * 0.3f && oddZeros > evenZeros) {
+            return String(payload, java.nio.charset.StandardCharsets.UTF_16LE).trim('\u0000')
+        }
+    }
+
+    // 3. Fallback: Many cameras and apps write UTF-8 directly under UNICODE\0
+    return decodeBytesSmartly(payload)
+}
+
+fun decodeExifTagSmartly(exif: androidx.exifinterface.media.ExifInterface, tag: String): String? {
+    val rawBytes = runCatching { exif.getAttributeBytes(tag) }.getOrNull()
+    return if (rawBytes != null && rawBytes.isNotEmpty()) {
+        decodeBytesSmartly(rawBytes).ifBlank { null }
+    } else {
+        exif.getAttribute(tag)?.ifBlank { null }
+    }
+}
+
 fun decodeExifUserComment(exif: androidx.exifinterface.media.ExifInterface): String? {
     val bytes = runCatching {
         exif.getAttributeBytes(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT)
@@ -203,35 +307,23 @@ fun decodeExifUserComment(exif: androidx.exifinterface.media.ExifInterface): Str
                 val header = String(bytes, 0, 8, java.nio.charset.StandardCharsets.US_ASCII)
                 when {
                     header.startsWith("ASCII") -> {
-                        String(bytes, 8, bytes.size - 8, java.nio.charset.StandardCharsets.US_ASCII)
+                        decodeBytesSmartly(bytes, 8, bytes.size - 8)
                     }
                     header.startsWith("UNICODE") -> {
-                        val contentBytes = bytes.copyOfRange(8, bytes.size)
-                        if (contentBytes.size >= 2) {
-                            if (contentBytes[0] == 0xFE.toByte() && contentBytes[1] == 0xFF.toByte()) {
-                                String(contentBytes, 2, contentBytes.size - 2, java.nio.charset.StandardCharsets.UTF_16BE)
-                            } else if (contentBytes[0] == 0xFF.toByte() && contentBytes[1] == 0xFE.toByte()) {
-                                String(contentBytes, 2, contentBytes.size - 2, java.nio.charset.StandardCharsets.UTF_16LE)
-                            } else {
-                                val s = String(contentBytes, java.nio.charset.StandardCharsets.UTF_16LE)
-                                if (s.any { it == '\u0000' } || s.count { !it.isISOControl() } < s.length * 0.5f) {
-                                    String(contentBytes, java.nio.charset.StandardCharsets.UTF_16BE)
-                                } else s
-                            }
-                        } else ""
+                        decodeUnicodePayload(bytes, 8, bytes.size - 8)
                     }
                     else -> {
-                        String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+                        decodeBytesSmartly(bytes)
                     }
                 }
             } else {
-                String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+                decodeBytesSmartly(bytes)
             }
         }.getOrNull()
         val cleaned = cleanUserComment(decoded)
         if (!cleaned.isNullOrBlank()) return cleaned
     }
-    return cleanUserComment(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT))
+    return cleanUserComment(decodeExifTagSmartly(exif, androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT))
 }
 
 fun cleanImageDescription(raw: String?): String? {
@@ -275,7 +367,7 @@ fun extractJpegComments(stream: java.io.InputStream): List<String> {
                     if (r == -1) break
                     read += r
                 }
-                val text = String(bytes, Charsets.UTF_8).trim().trim('\u0000')
+                val text = decodeBytesSmartly(bytes).trim().trim('\u0000')
                 if (text.isNotBlank()) {
                     comments.add(text)
                 }
@@ -326,18 +418,18 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
             } else rawModel
             val lensModel = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL))
                 ?: cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_LENS_MAKE))
-            val imageDesc = cleanImageDescription(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION))
-            val documentName = cleanExifString(exif.getAttribute("DocumentName"))
-                ?: cleanExifString(exif.getAttribute("XPTitle"))
+            val imageDesc = cleanImageDescription(decodeExifTagSmartly(exif, androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION))
+            val documentName = cleanExifString(exif.getAttribute("XPTitle"))
+                ?: cleanExifString(decodeExifTagSmartly(exif, "DocumentName"))
             val rawUserComment = decodeExifUserComment(exif)
             val xpComment = cleanExifString(exif.getAttribute("XPComment"))
             val userComment = rawUserComment ?: xpComment
             val imageUniqueId = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_UNIQUE_ID))
             val offsetTime = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL))
                 ?: cleanExifString(exif.getAttribute("OffsetTime"))
-            val artist = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_ARTIST))
-            val copyright = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_COPYRIGHT))
-            val software = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_SOFTWARE))
+            val artist = cleanExifString(decodeExifTagSmartly(exif, androidx.exifinterface.media.ExifInterface.TAG_ARTIST))
+            val copyright = cleanExifString(decodeExifTagSmartly(exif, androidx.exifinterface.media.ExifInterface.TAG_COPYRIGHT))
+            val software = cleanExifString(decodeExifTagSmartly(exif, androidx.exifinterface.media.ExifInterface.TAG_SOFTWARE))
             val dateTimeOriginal = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL))
                 ?: cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME))
 
@@ -418,6 +510,42 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
     }
 }
 
+fun setExifAttributeUnicode(exif: androidx.exifinterface.media.ExifInterface, tag: String, value: String) {
+    val applied = runCatching {
+        val mAttributesField = androidx.exifinterface.media.ExifInterface::class.java.getDeclaredField("mAttributes").apply {
+            isAccessible = true
+        }
+        @Suppress("UNCHECKED_CAST")
+        val mAttributes = mAttributesField.get(exif) as Array<HashMap<String, Any>>
+        val exifAttrClass = Class.forName("androidx.exifinterface.media.ExifInterface\$ExifAttribute")
+        val constructor = exifAttrClass.getDeclaredConstructor(Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, ByteArray::class.java).apply {
+            isAccessible = true
+        }
+
+        if (tag == androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT) {
+            val header = "UNICODE\u0000".toByteArray(java.nio.charset.StandardCharsets.US_ASCII)
+            val bom = byteArrayOf(0xFE.toByte(), 0xFF.toByte())
+            val textBytes = value.toByteArray(java.nio.charset.StandardCharsets.UTF_16BE)
+            val combined = ByteArray(header.size + bom.size + textBytes.size)
+            System.arraycopy(header, 0, combined, 0, header.size)
+            System.arraycopy(bom, 0, combined, header.size, bom.size)
+            System.arraycopy(textBytes, 0, combined, header.size + bom.size, textBytes.size)
+            val attr = constructor.newInstance(7 /* IFD_FORMAT_UNDEFINED */, combined.size, combined)
+            mAttributes[1][tag] = attr
+            true
+        } else {
+            val utf8Bytes = (value + "\u0000").toByteArray(java.nio.charset.StandardCharsets.UTF_8)
+            val attr = constructor.newInstance(2 /* IFD_FORMAT_STRING */, utf8Bytes.size, utf8Bytes)
+            mAttributes[0][tag] = attr
+            true
+        }
+    }.getOrDefault(false)
+
+    if (!applied) {
+        exif.setAttribute(tag, value)
+    }
+}
+
 fun applyExifToExifInterface(exif: androidx.exifinterface.media.ExifInterface, request: ExifEditRequest) {
     if (request.stripAllExif) {
         val tagsToClear = listOf(
@@ -470,10 +598,10 @@ fun applyExifToExifInterface(exif: androidx.exifinterface.media.ExifInterface, r
             exif.setAttribute("XPTitle", request.title.trim())
         }
         if (!request.imageDescription.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION, request.imageDescription.trim())
+            setExifAttributeUnicode(exif, androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION, request.imageDescription.trim())
         }
         if (!request.userComment.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT, request.userComment.trim())
+            setExifAttributeUnicode(exif, androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT, request.userComment.trim())
             exif.setAttribute("XPComment", request.userComment.trim())
         }
         if (!request.artist.isNullOrBlank()) {

@@ -288,37 +288,62 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         refresh(showLoading = false)
     }
 
+    private var refreshJob: Job? = null
+
     fun refresh(showLoading: Boolean = true) {
-        viewModelScope.launch {
-            vaultRepository.loadVaultItems()
-            val internalTrash = trashRepository.loadTrashItems()
-            val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30) {
-                runCatching { repository.loadImages(trashed = true) }.getOrDefault(emptyList())
-            } else emptyList()
-            val trashList = (internalTrash + systemTrash).distinctBy { it.id }
-            if (showLoading) {
-                _uiState.value = _uiState.value.copy(loading = true, trashed = trashList, error = null)
+        if (refreshJob?.isActive == true) {
+            if (showLoading && !_uiState.value.loading) {
+                _uiState.update { it.copy(loading = true) }
             }
-            val media = runCatching { repository.loadImages() }
-            media.fold(
-                onSuccess = { loaded ->
-                    val loadedPaths = loaded.mapTo(HashSet(loaded.size)) { it.path }
-                    val currentPending = _uiState.value.images.filter { item ->
-                        item.path.isNotBlank() && item.path !in loadedPaths && java.io.File(item.path).exists()
+            return
+        }
+        refreshJob = viewModelScope.launch {
+            try {
+                kotlinx.coroutines.withTimeout(8_000) {
+                    vaultRepository.loadVaultItems()
+                    val internalTrash = trashRepository.loadTrashItems()
+                    val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                        try {
+                            repository.loadImages(trashed = true)
+                        } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            emptyList()
+                        }
+                    } else emptyList()
+                    val trashList = (internalTrash + systemTrash).distinctBy { it.id }
+                    if (showLoading) {
+                        _uiState.update { it.copy(loading = true, trashed = trashList, error = null) }
                     }
-                    val combined = if (currentPending.isNotEmpty()) {
-                        (loaded + currentPending).distinctBy { it.path }.sortedWith(
-                            compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.id }
-                        )
-                    } else {
-                        loaded
+                    try {
+                        val loaded = repository.loadImages()
+                        val loadedPaths = loaded.mapTo(HashSet(loaded.size)) { it.path }
+                        val currentPending = _uiState.value.images.filter { item ->
+                            item.path.isNotBlank() && item.path !in loadedPaths && java.io.File(item.path).exists()
+                        }
+                        val combined = if (currentPending.isNotEmpty()) {
+                            (loaded + currentPending).distinctBy { it.path }.sortedWith(
+                                compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.id }
+                            )
+                        } else {
+                            loaded
+                        }
+                        _uiState.update { it.copy(images = combined, loading = false, trashed = trashList, error = null) }
+                        if (_duplicateState.value.hasScanned) _duplicateState.value = DuplicateScanState()
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        if (_uiState.value.images.isEmpty()) {
+                            _uiState.update { state -> state.copy(loading = false, error = e.message ?: "Could not load photos") }
+                        } else {
+                            _uiState.update { it.copy(loading = false) }
+                        }
                     }
-                    _uiState.value = _uiState.value.copy(images = combined, loading = false, trashed = trashList, error = null)
-                    if (_duplicateState.value.hasScanned) _duplicateState.value = DuplicateScanState()
-                },
-                onFailure = { _uiState.value = _uiState.value.copy(loading = false,
-                    error = it.message ?: "Could not load photos") },
-            )
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _uiState.update { it.copy(loading = false) }
+            } finally {
+                _uiState.update { it.copy(loading = false) }
+            }
         }
     }
 }
