@@ -77,6 +77,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
@@ -184,6 +185,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -220,10 +222,13 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.material3.Checkbox
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -1836,7 +1841,7 @@ private fun GalleryScaffold(
             } else {
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
             }
-            clipData = ClipData.newUri(context.contentResolver, mimeType, uris.first()).apply {
+            clipData = ClipData.newUri(context.contentResolver, "media", uris.first()).apply {
                 uris.drop(1).forEach { addItem(ClipData.Item(it)) }
             }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -3773,11 +3778,12 @@ private fun PhotoGrid(
 
     val rowOffsets = remember(rowLayout, photoHeight, headerHeight, spacingPx, topPaddingPx) {
         val offsets = IntArray(totalRows)
-        var acc = topPaddingPx
+        var acc = 0
         for (r in 0 until totalRows) {
             offsets[r] = acc
             val h = if (isRowHeader[r]) headerHeight else photoHeight
             acc += h + spacingPx
+            if (r == 0) acc += topPaddingPx
         }
         offsets
     }
@@ -3788,11 +3794,15 @@ private fun PhotoGrid(
             val h = if (isRowHeader[r]) headerHeight else photoHeight
             acc += h + spacingPx
         }
+        acc -= spacingPx // Remove spacingPx from last row as there is no more spacingPx
         acc += bottomPaddingPx
         maxOf(acc, 1)
     }
 
     var scrubberDragging by remember { mutableStateOf(false) }
+    var scrubberBubbleHeightPx by remember { mutableFloatStateOf(0f) }
+    var scrubberTrackWidthPx by remember { mutableFloatStateOf(0f) }
+    var scrubberTrackHeightPx by remember { mutableFloatStateOf(0f) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
     var scrubTargetIndex by remember(timelineItems) { mutableIntStateOf(0) }
     var suppressReleaseClickId by remember { mutableStateOf<Long?>(null) }
@@ -3817,34 +3827,37 @@ private fun PhotoGrid(
                     val firstItem = visibleItems.first()
                     val row = itemToRow.getOrElse(firstItem.index) { 0 }
                     val rowStartPx = rowOffsets.getOrElse(row) { 0 }
-                    val currentScrollPx = rowStartPx - firstItem.offset.y
+                    val currentScrollPx = rowStartPx - firstItem.offset.y + topPaddingPx
                     (currentScrollPx / maxScrollPx).coerceIn(0f, 1f)
                 }
             }
         }
     }
-    val visibleDate by remember(timelineItems) { derivedStateOf {
+    val visibleDate by remember(timelineItems, rowToItem, itemToRow, isRowHeader, scrubberDragging, scrubTargetIndex, gridState) { derivedStateOf {
         if (timelineItems.isEmpty()) return@derivedStateOf null
-        val visibleIndex = if (scrubberDragging) scrubTargetIndex else gridState.firstVisibleItemIndex
-        val index = visibleIndex.coerceIn(0, timelineItems.lastIndex)
-        var found: MediaImage? = null
-        for (i in index..timelineItems.lastIndex) {
-            val item = timelineItems[i]
-            if (item != null) {
-                found = item
-                break
-            }
+        val visibleIndex = if (scrubberDragging) {
+            scrubTargetIndex
+        } else {
+            gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: gridState.firstVisibleItemIndex
         }
-        if (found == null) {
-            for (i in index downTo 0) {
+        val index = visibleIndex.coerceIn(0, timelineItems.lastIndex)
+        val row = itemToRow.getOrElse(index) { 0 }.coerceIn(0, totalRows - 1)
+        val dateRow = if (isRowHeader.getOrElse(row) { false }) (row + 1).coerceAtMost(totalRows - 1) else row
+
+        // First item index of the row "dateRow"
+        val rowItemIndex = rowToItem.getOrNull(dateRow)?.coerceIn(0, timelineItems.lastIndex)
+        rowItemIndex?.let { startIndex ->
+            var found: MediaImage? = null
+            for (i in startIndex..timelineItems.lastIndex) {
+                if (i != startIndex && itemToRow.getOrElse(i) { dateRow } != dateRow) { break }
                 val item = timelineItems[i]
                 if (item != null) {
                     found = item
                     break
                 }
             }
+            found
         }
-        found
     } }
     val currentImages by rememberUpdatedState(images)
     val currentSelection by rememberUpdatedState(selectedIds)
@@ -4073,6 +4086,10 @@ private fun PhotoGrid(
                         .fillMaxHeight()
                         .padding(bottom = bottomPadding)
                         .width(40.dp)
+                        .onSizeChanged {
+                            scrubberTrackWidthPx = it.width.toFloat()
+                            scrubberTrackHeightPx = it.height.toFloat()
+                        }
                         .graphicsLayer { alpha = scrollerAlpha }
                         .pointerInput(timelineItems.size, totalRows, totalContentHeight) {
                             awaitEachGesture {
@@ -4104,7 +4121,12 @@ private fun PhotoGrid(
                                     val rowStart = rowOffsets[targetRow]
                                     val remainder = (targetScrollPx - rowStart).coerceAtLeast(0)
                                     val targetIndex = rowToItem[targetRow]
-                                    val offset = remainder
+                                    /*
+                                    "gridState.scrollToItem" takes top padding of lazygrid into account.
+                                    It scrolls of that amount less and this would cause a problem in edge cases for the shift of the bubble time.
+                                    (The bubble would change its text, but the scroll would not align, because it would not scroll far enough)
+                                    */
+                                    val offset = if (rowStart > 0) remainder + topPaddingPx else remainder
                                     scrubTargetIndex = targetIndex
                                     if (targetIndex != lastTargetIndex || kotlin.math.abs(offset - lastOffset) > 8) {
                                         lastTargetIndex = targetIndex
@@ -4136,7 +4158,12 @@ private fun PhotoGrid(
                                     val rowStart = rowOffsets[targetRow]
                                     val remainder = (targetScrollPx - rowStart).coerceAtLeast(0)
                                     val targetIndex = rowToItem[targetRow]
-                                    val offset = remainder
+                                    /*
+                                    "gridState.scrollToItem" takes top padding of lazygrid into account.
+                                    It scrolls of that amount less and this would cause a problem in edge cases for the shift of the bubble time.
+                                    (The bubble would change its text, but the scroll would not align, because it would not scroll far enough)
+                                    */
+                                    val offset = if (rowStart > 0) remainder + topPaddingPx else remainder
                                     scrubberScope.launch {
                                         gridState.scrollToItem(targetIndex, offset)
                                     }
@@ -4172,10 +4199,32 @@ private fun PhotoGrid(
             }
 
             AnimatedVisibility(
-                visible = scrubberDragging,
+                visible = scrubberDragging && showTimeline,
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 42.dp),
+                    .align(Alignment.TopEnd)
+                    .onSizeChanged {
+                        scrubberBubbleHeightPx = it.height.toFloat()
+                    }
+                    .offset {
+                        if (scrubberTrackHeightPx > 0f && scrubberBubbleHeightPx > 0f) {
+                            val inset = 16.dp.toPx()
+                            val thumbWidth = 5.dp.toPx()
+                            val thumbHeight = 48.dp.toPx()
+                            val bubbleSpacing = 24.dp.toPx()
+                            val maxTravel = (scrubberTrackHeightPx - inset * 2f - thumbHeight).coerceAtLeast(0f)
+                            val thumbTop = inset + scrollFraction.coerceIn(0f, 1f) * maxTravel
+                            val thumbLeft = scrubberTrackWidthPx - thumbWidth - 4.dp.toPx()
+                            // val thumbLeft = scrubberTrackWidthPx - thumbWidthP
+                            val thumbCenterY = thumbTop + thumbHeight / 2f
+                            val bubbleX = kotlin.math.round(-4.dp.toPx() - thumbLeft - bubbleSpacing).toInt()
+                            // val bubbleX = kotlin.math.round(-thumbLeft - bubbleSpacing).toInt()
+                            val bubbleY = kotlin.math.round(thumbCenterY - scrubberBubbleHeightPx / 2f).toInt()
+
+                            IntOffset(x = bubbleX, y = bubbleY)
+                        } else {
+                            IntOffset.Zero
+                        }
+                    },
                 enter = fadeIn(tween(120)) + scaleIn(tween(180), initialScale = .88f),
                 exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = .9f)
             ) {
@@ -4923,12 +4972,11 @@ private fun PhotoViewer(
                         modifier = Modifier.weight(1f),
                     ) {
                         val intent = Intent(Intent.ACTION_SEND).apply {
-                            val mimeType = current.mimeType.ifBlank { if (current.isVideo) "video/*" else "image/*" }
-                            type = mimeType
+                            type = current.mimeType.ifBlank { if (current.isVideo) "video/*" else "image/*" }
                             val shareUri = getShareUri(context, current)
                             putExtra(Intent.EXTRA_STREAM, shareUri)
                             putExtra(Intent.EXTRA_TITLE, current.name)
-                            clipData = ClipData.newUri(context.contentResolver, mimeType, shareUri)
+                            clipData = ClipData.newUri(context.contentResolver, "media", shareUri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
@@ -5638,10 +5686,27 @@ private fun PhotoDetailsSheet(
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        scrimColor = Color.Transparent,
+        tonalElevation = 0.dp,
+        dragHandle = {
+            Surface(
+                modifier = Modifier.padding(vertical = 11.dp).semantics {
+                        contentDescription = "Drag Handle"
+                    },
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                shape = MaterialTheme.shapes.extraLarge,
+            ) {
+                Box(Modifier.size(width = 32.dp, height = 4.dp))
+            }
+        }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .fillMaxHeight(0.75f)
                 .navigationBarsPadding()
                 .draggable(
                     state = draggableState,
@@ -5655,7 +5720,6 @@ private fun PhotoDetailsSheet(
                         dragOffset = 0f
                     }
                 )
-                .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -5704,245 +5768,276 @@ private fun PhotoDetailsSheet(
                 }
             }
 
-            val currentLocale = rememberAppLocale()
-            val resolvedTitle = (currentExif?.title?.takeIf { it.isNotBlank() } ?: image.title).takeIf {
-                it.isNotBlank() && it != image.name && it != image.name.substringBeforeLast('.')
-            }
-            val resolvedDesc = (currentExif?.imageDescription?.takeIf { it.isNotBlank() } ?: image.description.takeIf { it.isNotBlank() })?.takeIf {
-                it != resolvedTitle && it != image.name && it != image.name.substringBeforeLast('.')
-            }
-            val commentText = currentExif?.userComment?.ifBlank { null }
-            val hasNotes = commentText != null || resolvedDesc != null || !currentExif?.xpComment.isNullOrBlank() || !currentExif?.jpegComments.isNullOrEmpty() || resolvedTitle != null
-
-            // 1. Description Card
-            if (hasNotes) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.AutoMirrored.Outlined.Comment, stringResource(R.string.details_section_description), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                            Text(stringResource(R.string.details_section_description), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        }
-                        if (resolvedTitle != null) {
-                            DetailBlock(stringResource(R.string.details_title_field), resolvedTitle)
-                        }
-                        if (commentText != null) {
-                            DetailBlock(stringResource(R.string.details_exif_user_comment), commentText)
-                        }
-                        if (!currentExif?.xpComment.isNullOrBlank() && currentExif?.xpComment != commentText) {
-                            DetailBlock(stringResource(R.string.details_xp_comment), currentExif!!.xpComment!!)
-                        }
-                        currentExif?.jpegComments?.filter { it != commentText && it != currentExif?.xpComment }?.let { comments ->
-                            comments.forEachIndexed { idx, jc ->
-                                val label = if (comments.size > 1) {
-                                    stringResource(R.string.details_jpeg_comment_numbered, idx + 1)
-                                } else {
-                                    stringResource(R.string.details_jpeg_comment)
-                                }
-                                DetailBlock(label, jc)
-                            }
-                        }
-                        if (resolvedDesc != null) {
-                            DetailBlock(stringResource(R.string.details_desc_field), resolvedDesc)
-                        }
-                    }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                val currentLocale = rememberAppLocale()
+                val resolvedTitle = (currentExif?.title?.takeIf { it.isNotBlank() } ?: image.title).takeIf {
+                    it.isNotBlank() && it != image.name && it != image.name.substringBeforeLast('.')
                 }
-            }
-
-            // 2. Origin Card (Captured Date & Time, Location, Artist, Copyright, Software)
-            val parsedCapturedDate = remember(currentExif?.dateTimeOriginal, currentExif?.offsetTimeOriginal, currentLocale, timelineDateFormat, customTimelineDateFormat) {
-                val raw = currentExif?.dateTimeOriginal?.trim()
-                if (raw.isNullOrBlank()) return@remember null
-                val offset = currentExif?.offsetTimeOriginal?.trim()
-                val tz = if (!offset.isNullOrBlank()) {
-                    val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
-                    java.util.TimeZone.getTimeZone(prefix + offset)
-                } else {
-                    java.util.TimeZone.getDefault()
+                val resolvedDesc = (currentExif?.imageDescription?.takeIf { it.isNotBlank() } ?: image.description.takeIf { it.isNotBlank() })?.takeIf {
+                    it != resolvedTitle && it != image.name && it != image.name.substringBeforeLast('.')
                 }
-                val dateMillis = runCatching {
-                    val parser = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).apply {
-                        timeZone = tz
-                    }
-                    parser.parse(raw)?.time
-                }.getOrNull() ?: return@remember null
-                val tf = DateFormat.getTimeInstance(DateFormat.MEDIUM, currentLocale).apply {
-                    timeZone = tz
-                }
-                val timeStr = tf.format(Date(dateMillis))
-                val localDate = Instant.ofEpochMilli(dateMillis).atZone(tz.toZoneId()).toLocalDate()
-                val formatter = getTimelineFormatter(
-                    format = timelineDateFormat,
-                    isSameYear = false,
-                    showDayOfWeek = false,
-                    locale = currentLocale,
-                    customPattern = customTimelineDateFormat,
-                    smartYearHiding = false,
-                )
-                val tzSuffix = if (!offset.isNullOrBlank()) " ($offset)" else ""
-                "${localDate.format(formatter)} · $timeStr$tzSuffix"
-            }
-            val hasOrigin = !parsedCapturedDate.isNullOrBlank() ||
-                (currentExif?.latitude != null && currentExif.longitude != null) ||
-                !currentExif?.artist.isNullOrBlank() ||
-                !currentExif?.copyright.isNullOrBlank() ||
-                !currentExif?.software.isNullOrBlank()
+                val commentText = currentExif?.userComment?.ifBlank { null }
+                val hasNotes = commentText != null || resolvedDesc != null || !currentExif?.xpComment.isNullOrBlank() || !currentExif?.jpegComments.isNullOrEmpty() || resolvedTitle != null
 
-            if (hasOrigin) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Outlined.LocationOn, stringResource(R.string.details_section_origin), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                            Text(stringResource(R.string.details_section_origin), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        }
-                        if (!parsedCapturedDate.isNullOrBlank()) {
-                            DetailItem(stringResource(R.string.details_captured), parsedCapturedDate)
-                        }
-
-                        if (currentExif?.latitude != null && currentExif.longitude != null) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(stringResource(R.string.details_location), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    val locStr = "%.4f, %.4f".format(Locale.US, currentExif.latitude, currentExif.longitude) +
-                                        (currentExif.altitude?.let { " (%.0f m)".format(Locale.US, it) } ?: "")
-                                    Text(locStr, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-                                }
-                                TextButton(onClick = {
-                                    val uri = Uri.parse("geo:${currentExif.latitude},${currentExif.longitude}?q=${currentExif.latitude},${currentExif.longitude}(Photo+Location)")
-                                    val intent = Intent(Intent.ACTION_VIEW, uri)
-                                    runCatching { context.startActivity(intent) }
-                                }) {
-                                    Icon(Icons.Outlined.Map, null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text(stringResource(R.string.details_map))
-                                }
-                            }
-                        }
-
-                        if (!currentExif?.artist.isNullOrBlank()) {
-                            DetailItem(stringResource(R.string.details_artist), currentExif.artist!!)
-                        }
-                        if (!currentExif?.copyright.isNullOrBlank()) {
-                            DetailItem(stringResource(R.string.details_copyright), currentExif.copyright!!)
-                        }
-                        if (!currentExif?.software.isNullOrBlank()) {
-                            DetailItem(stringResource(R.string.details_software), currentExif.software!!)
-                        }
-                    }
-                }
-            }
-
-            // 3. Camera & Lens Card
-            currentExif?.let { data ->
-                val hasCamera = data.cameraDisplayName != null || data.aperture != null || data.shutterSpeed != null || data.iso != null || data.focalLength != null
-                if (hasCamera) {
+                // 1. Description Card
+                if (hasNotes) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)),
                         shape = RoundedCornerShape(16.dp),
                     ) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Icon(Icons.Outlined.CameraAlt, stringResource(R.string.details_camera), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                                Text(stringResource(R.string.details_camera), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                Icon(Icons.AutoMirrored.Outlined.Comment, stringResource(R.string.details_section_description), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Text(stringResource(R.string.details_section_description), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             }
-                            if (data.cameraDisplayName != null) {
-                                DetailItem(stringResource(R.string.details_camera), data.cameraDisplayName!!)
+                            if (resolvedTitle != null) {
+                                DetailBlock(stringResource(R.string.details_title_field), resolvedTitle)
                             }
-                            if (!data.lensModel.isNullOrBlank()) {
-                                DetailItem(stringResource(R.string.details_lens), data.lensModel)
+                            if (commentText != null) {
+                                DetailBlock(stringResource(R.string.details_exif_user_comment), commentText)
                             }
-                            val specs = listOfNotNull(data.aperture, data.shutterSpeed, data.focalLength, data.iso).joinToString(" · ")
-                            if (specs.isNotBlank()) {
-                                DetailItem(stringResource(R.string.details_camera_capture), specs)
+                            if (!currentExif?.xpComment.isNullOrBlank() && currentExif?.xpComment != commentText) {
+                                DetailBlock(stringResource(R.string.details_xp_comment), currentExif!!.xpComment!!)
                             }
-                            val extraSpecs = listOfNotNull(data.flash, data.whiteBalance?.let { "${stringResource(R.string.details_white_balance)}: $it" }).joinToString(" · ")
-                            if (extraSpecs.isNotBlank()) {
-                                Text(extraSpecs, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            currentExif?.jpegComments?.filter { it != commentText && it != currentExif?.xpComment }?.let { comments ->
+                                comments.forEachIndexed { idx, jc ->
+                                    val label = if (comments.size > 1) {
+                                        stringResource(R.string.details_jpeg_comment_numbered, idx + 1)
+                                    } else {
+                                        stringResource(R.string.details_jpeg_comment)
+                                    }
+                                    DetailBlock(label, jc)
+                                }
+                            }
+                            if (resolvedDesc != null) {
+                                DetailBlock(stringResource(R.string.details_desc_field), resolvedDesc)
                             }
                         }
                     }
                 }
-            }
 
-            // 4. Image Properties Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Outlined.Image, stringResource(R.string.details_image_properties), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                        Text(stringResource(R.string.details_image_properties), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                // 2. Origin Card (Captured Date & Time, Location, Artist, Copyright, Software)
+                val parsedCapturedDate = remember(currentExif?.dateTimeOriginal, currentExif?.offsetTimeOriginal, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                    val raw = currentExif?.dateTimeOriginal?.trim()
+                    if (raw.isNullOrBlank()) return@remember null
+                    val offset = currentExif?.offsetTimeOriginal?.trim()
+                    val tz = if (!offset.isNullOrBlank()) {
+                        val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
+                        java.util.TimeZone.getTimeZone(prefix + offset)
+                    } else {
+                        java.util.TimeZone.getDefault()
                     }
-                    val mp = if (image.width > 0 && image.height > 0) (image.width * image.height) / 1_000_000.0 else 0.0
-                    val resText = if (mp > 0) "${image.width} × ${image.height} (%.1f MP)".format(Locale.US, mp) else "${image.width} × ${image.height}"
-                    DetailItem(stringResource(R.string.details_resolution), resText)
-                    if (!currentExif?.imageUniqueId.isNullOrBlank()) {
-                        DetailBlock(stringResource(R.string.details_image_unique_id), currentExif.imageUniqueId!!)
+                    val dateMillis = runCatching {
+                        val parser = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).apply {
+                            timeZone = tz
+                        }
+                        parser.parse(raw)?.time
+                    }.getOrNull() ?: return@remember null
+                    val tf = DateFormat.getTimeInstance(DateFormat.MEDIUM, currentLocale).apply {
+                        timeZone = tz
                     }
-                    if (image.orientation != 0) DetailItem(stringResource(R.string.details_orientation), "${image.orientation}°")
-                    if (image.isVideo && image.durationMs > 0) DetailItem(stringResource(R.string.details_duration), formatMediaDuration(image.durationMs))
+                    val timeStr = tf.format(Date(dateMillis))
+                    val localDate = Instant.ofEpochMilli(dateMillis).atZone(tz.toZoneId()).toLocalDate()
+                    val formatter = getTimelineFormatter(
+                        format = timelineDateFormat,
+                        isSameYear = false,
+                        showDayOfWeek = false,
+                        locale = currentLocale,
+                        customPattern = customTimelineDateFormat,
+                        smartYearHiding = false,
+                    )
+                    val tzSuffix = if (!offset.isNullOrBlank()) " ($offset)" else ""
+                    "${localDate.format(formatter)} · $timeStr$tzSuffix"
                 }
-            }
+                val hasOrigin = !parsedCapturedDate.isNullOrBlank() ||
+                    (currentExif?.latitude != null && currentExif.longitude != null) ||
+                    !currentExif?.artist.isNullOrBlank() ||
+                    !currentExif?.copyright.isNullOrBlank() ||
+                    !currentExif?.software.isNullOrBlank()
 
-            // 5. File Information Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Outlined.Description, stringResource(R.string.details_file_info), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                        Text(stringResource(R.string.details_file_info), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                if (hasOrigin) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.875f)),
+                        shape = RoundedCornerShape(16.dp),
                     ) {
-                        Text(stringResource(R.string.details_file_name), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            SelectionContainer(Modifier.weight(1f)) {
-                                Text(image.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Outlined.LocationOn, stringResource(R.string.details_section_origin), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Text(stringResource(R.string.details_section_origin), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             }
-                            IconButton(
-                                onClick = { showRenameDialog = true },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    Icons.Outlined.Edit,
-                                    contentDescription = stringResource(R.string.action_rename),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
+                            if (!parsedCapturedDate.isNullOrBlank()) {
+                                DetailItem(stringResource(R.string.details_captured), parsedCapturedDate)
+                            }
+
+                            if (currentExif?.latitude != null && currentExif.longitude != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(stringResource(R.string.details_location), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        val locStr = "%.4f, %.4f".format(Locale.US, currentExif.latitude, currentExif.longitude) +
+                                            (currentExif.altitude?.let { " (%.0f m)".format(Locale.US, it) } ?: "")
+                                        Text(locStr, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                                    }
+                                    TextButton(onClick = {
+                                        val uri = Uri.parse("geo:${currentExif.latitude},${currentExif.longitude}?q=${currentExif.latitude},${currentExif.longitude}(Photo+Location)")
+                                        val intent = Intent(Intent.ACTION_VIEW, uri)
+                                        runCatching { context.startActivity(intent) }
+                                    }) {
+                                        Icon(Icons.Outlined.Map, null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(stringResource(R.string.details_map))
+                                    }
+                                }
+                            }
+
+                            if (!currentExif?.artist.isNullOrBlank()) {
+                                DetailItem(stringResource(R.string.details_artist), currentExif.artist!!)
+                            }
+                            if (!currentExif?.copyright.isNullOrBlank()) {
+                                DetailItem(stringResource(R.string.details_copyright), currentExif.copyright!!)
+                            }
+                            if (!currentExif?.software.isNullOrBlank()) {
+                                DetailItem(stringResource(R.string.details_software), currentExif.software!!)
                             }
                         }
                     }
-                    val addedMillis = remember(image.dateAdded) {
-                        image.dateAdded.takeIf { it > 0 }
+                }
+
+                // 3. Camera & Lens Card
+                currentExif?.let { data ->
+                    val hasCamera = data.cameraDisplayName != null || data.aperture != null || data.shutterSpeed != null || data.iso != null || data.focalLength != null
+                    if (hasCamera) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.875f)),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Icon(Icons.Outlined.CameraAlt, stringResource(R.string.details_camera), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                    Text(stringResource(R.string.details_camera), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                }
+                                if (data.cameraDisplayName != null) {
+                                    DetailItem(stringResource(R.string.details_camera), data.cameraDisplayName!!)
+                                }
+                                if (!data.lensModel.isNullOrBlank()) {
+                                    DetailItem(stringResource(R.string.details_lens), data.lensModel)
+                                }
+                                val specs = listOfNotNull(data.aperture, data.shutterSpeed, data.focalLength, data.iso).joinToString(" · ")
+                                if (specs.isNotBlank()) {
+                                    DetailItem(stringResource(R.string.details_camera_capture), specs)
+                                }
+                                val extraSpecs = listOfNotNull(data.flash, data.whiteBalance?.let { "${stringResource(R.string.details_white_balance)}: $it" }).joinToString(" · ")
+                                if (extraSpecs.isNotBlank()) {
+                                    Text(extraSpecs, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
                     }
-                    val formattedAddedDate = remember(addedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
-                        if (addedMillis == null) null else {
+                }
+
+                // 4. Image Properties Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.875f)),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Outlined.Image, stringResource(R.string.details_image_properties), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Text(stringResource(R.string.details_image_properties), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                        val mp = if (image.width > 0 && image.height > 0) (image.width * image.height) / 1_000_000.0 else 0.0
+                        val resText = if (mp > 0) "${image.width} × ${image.height} (%.1f MP)".format(Locale.US, mp) else "${image.width} × ${image.height}"
+                        DetailItem(stringResource(R.string.details_resolution), resText)
+                        if (!currentExif?.imageUniqueId.isNullOrBlank()) {
+                            DetailBlock(stringResource(R.string.details_image_unique_id), currentExif.imageUniqueId!!)
+                        }
+                        if (image.orientation != 0) DetailItem(stringResource(R.string.details_orientation), "${image.orientation}°")
+                        if (image.isVideo && image.durationMs > 0) DetailItem(stringResource(R.string.details_duration), formatMediaDuration(image.durationMs))
+                    }
+                }
+
+                // 5. File Information Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.875f)),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Outlined.Description, stringResource(R.string.details_file_info), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Text(stringResource(R.string.details_file_info), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(stringResource(R.string.details_file_name), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                SelectionContainer(Modifier.weight(1f)) {
+                                    Text(image.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                }
+                                IconButton(
+                                    onClick = { showRenameDialog = true },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Edit,
+                                        contentDescription = stringResource(R.string.action_rename),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                        val addedMillis = remember(image.dateAdded) {
+                            image.dateAdded.takeIf { it > 0 }
+                        }
+                        val formattedAddedDate = remember(addedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
+                            if (addedMillis == null) null else {
+                                val tf = DateFormat.getTimeInstance(DateFormat.SHORT, currentLocale)
+                                val timeStr = tf.format(Date(addedMillis))
+                                val localDate = Instant.ofEpochMilli(addedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+                                val formatter = getTimelineFormatter(
+                                    format = timelineDateFormat,
+                                    isSameYear = false,
+                                    showDayOfWeek = false,
+                                    locale = currentLocale,
+                                    customPattern = customTimelineDateFormat,
+                                    smartYearHiding = false,
+                                )
+                                val dateStr = localDate.format(formatter)
+                                "$dateStr · $timeStr"
+                            }
+                        }
+                        val modifiedMillis = remember(image.path, image.dateModified, image.dateTaken) {
+                            if (image.dateModified > 0) {
+                                image.dateModified
+                            } else {
+                                val f = File(image.path)
+                                if (f.exists() && f.lastModified() > 0) f.lastModified() else image.dateTaken
+                            }
+                        }
+                        val formattedModifiedDate = remember(modifiedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
                             val tf = DateFormat.getTimeInstance(DateFormat.SHORT, currentLocale)
-                            val timeStr = tf.format(Date(addedMillis))
-                            val localDate = Instant.ofEpochMilli(addedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+                            val timeStr = tf.format(Date(modifiedMillis))
+                            val localDate = Instant.ofEpochMilli(modifiedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
                             val formatter = getTimelineFormatter(
                                 format = timelineDateFormat,
                                 isSameYear = false,
@@ -5954,51 +6049,28 @@ private fun PhotoDetailsSheet(
                             val dateStr = localDate.format(formatter)
                             "$dateStr · $timeStr"
                         }
-                    }
-                    val modifiedMillis = remember(image.path, image.dateModified, image.dateTaken) {
-                        if (image.dateModified > 0) {
-                            image.dateModified
-                        } else {
-                            val f = File(image.path)
-                            if (f.exists() && f.lastModified() > 0) f.lastModified() else image.dateTaken
+                        if (formattedAddedDate != null) {
+                            DetailItem(stringResource(R.string.details_added), formattedAddedDate)
                         }
+                        DetailItem(stringResource(R.string.details_modified), formattedModifiedDate)
+                        DetailItem(stringResource(R.string.details_type), image.mimeType.ifBlank { if (image.isVideo) stringResource(R.string.format_video) else stringResource(R.string.format_image) })
+                        DetailItem(stringResource(R.string.details_size), formatFileSize(image.sizeBytes))
+                        DetailBlock(stringResource(R.string.details_url), image.uri.toString())
+                        DetailBlock(stringResource(R.string.details_path), image.path)
                     }
-                    val formattedModifiedDate = remember(modifiedMillis, currentLocale, timelineDateFormat, customTimelineDateFormat) {
-                        val tf = DateFormat.getTimeInstance(DateFormat.SHORT, currentLocale)
-                        val timeStr = tf.format(Date(modifiedMillis))
-                        val localDate = Instant.ofEpochMilli(modifiedMillis).atZone(ZoneId.systemDefault()).toLocalDate()
-                        val formatter = getTimelineFormatter(
-                            format = timelineDateFormat,
-                            isSameYear = false,
-                            showDayOfWeek = false,
-                            locale = currentLocale,
-                            customPattern = customTimelineDateFormat,
-                            smartYearHiding = false,
-                        )
-                        val dateStr = localDate.format(formatter)
-                        "$dateStr · $timeStr"
-                    }
-                    if (formattedAddedDate != null) {
-                        DetailItem(stringResource(R.string.details_added), formattedAddedDate)
-                    }
-                    DetailItem(stringResource(R.string.details_modified), formattedModifiedDate)
-                    DetailItem(stringResource(R.string.details_type), image.mimeType.ifBlank { if (image.isVideo) stringResource(R.string.format_video) else stringResource(R.string.format_image) })
-                    DetailItem(stringResource(R.string.details_size), formatFileSize(image.sizeBytes))
-                    DetailBlock(stringResource(R.string.details_url), image.uri.toString())
-                    DetailBlock(stringResource(R.string.details_path), image.path)
                 }
-            }
 
-            // Edit Metadata Action Button
-            if (!image.isVideo) {
-                Button(
-                    onClick = { editing = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Icon(Icons.Outlined.Edit, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.details_edit_metadata))
+                // Edit Metadata Action Button
+                if (!image.isVideo) {
+                    Button(
+                        onClick = { editing = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Icon(Icons.Outlined.Edit, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.details_edit_metadata))
+                    }
                 }
             }
         }
