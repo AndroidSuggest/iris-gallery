@@ -3781,9 +3781,9 @@ private fun PhotoGrid(
         var acc = 0
         for (r in 0 until totalRows) {
             offsets[r] = acc
+            if (r == 0) acc += topPaddingPx
             val h = if (isRowHeader[r]) headerHeight else photoHeight
             acc += h + spacingPx
-            if (r == 0) acc += topPaddingPx
         }
         offsets
     }
@@ -3827,37 +3827,37 @@ private fun PhotoGrid(
                     val firstItem = visibleItems.first()
                     val row = itemToRow.getOrElse(firstItem.index) { 0 }
                     val rowStartPx = rowOffsets.getOrElse(row) { 0 }
-                    val currentScrollPx = rowStartPx - firstItem.offset.y + topPaddingPx
+                    /*
+                    "gridState.layoutInfo.visibleItemsInfo.offset.y" starts with value 0 at scrollposition 0 for the first visible item when "gridState.layoutInfo.visibleItemsInfo.first().index" is 0.
+                    For all other scrollpositions and when "gridState.layoutInfo.visibleItemsInfo.first().index" IS NOT 0, it starts with the negative value of topPaddingPx. (For example: -18)
+                    "gridState.layoutInfo.visibleItemsInfo.offset.y" is always a negative value. Alternative: "gridState.firstVisibleItemScrollOffset" which is always a positive number and always starts with 0.
+                    "gridState.firstVisibleItemIndex" can already change a value of topPaddingPx earlier, which means the item could be still in sight, when the next item is visible.
+                    "gridState.layoutInfo.visibleItemsInfo.first().index" changes exactly when the last item is fully out of sight and an other item is visible.
+                    */
+                    val currentScrollPx = rowStartPx - if(firstItem.index > 0) (firstItem.offset.y + topPaddingPx) else firstItem.offset.y
                     (currentScrollPx / maxScrollPx).coerceIn(0f, 1f)
                 }
             }
         }
     }
-    val visibleDate by remember(timelineItems, rowToItem, itemToRow, isRowHeader, scrubberDragging, scrubTargetIndex, gridState) { derivedStateOf {
+    val visibleDate by remember(timelineItems, rowOffsets, totalContentHeight) { derivedStateOf {
         if (timelineItems.isEmpty()) return@derivedStateOf null
-        val visibleIndex = if (scrubberDragging) {
-            scrubTargetIndex
-        } else {
-            gridState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: gridState.firstVisibleItemIndex
-        }
-        val index = visibleIndex.coerceIn(0, timelineItems.lastIndex)
-        val row = itemToRow.getOrElse(index) { 0 }.coerceIn(0, totalRows - 1)
-        val dateRow = if (isRowHeader.getOrElse(row) { false }) (row + 1).coerceAtMost(totalRows - 1) else row
 
-        // First item index of the row "dateRow"
-        val rowItemIndex = rowToItem.getOrNull(dateRow)?.coerceIn(0, timelineItems.lastIndex)
-        rowItemIndex?.let { startIndex ->
-            var found: MediaImage? = null
-            for (i in startIndex..timelineItems.lastIndex) {
-                if (i != startIndex && itemToRow.getOrElse(i) { dateRow } != dateRow) { break }
-                val item = timelineItems[i]
-                if (item != null) {
-                    found = item
-                    break
-                }
-            }
-            found
+        val viewportHeight = gridState.layoutInfo.viewportSize.height.toFloat()
+        val maxScrollPx = (totalContentHeight - viewportHeight).coerceAtLeast(1f)
+        val currentScrollPx = (scrollFraction * maxScrollPx).toInt()
+        var row = rowOffsets.binarySearch(currentScrollPx)
+
+        if (row < 0) {
+            row = (-row - 2).coerceIn(0, rowOffsets.lastIndex)
         }
+
+        if (isRowHeader.getOrElse(row) { false }) {
+            row = (row + 1).coerceAtMost(rowOffsets.lastIndex)
+        }
+
+        val index = rowToItem.getOrNull(row)?.coerceIn(0, timelineItems.lastIndex)
+        index?.let { timelineItems[it] }
     } }
     val currentImages by rememberUpdatedState(images)
     val currentSelection by rememberUpdatedState(selectedIds)
