@@ -29,6 +29,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -3777,16 +3778,26 @@ private fun PhotoGrid(
     val isRowHeader = rowLayout.third.second
 
     val rowOffsets = remember(rowLayout, photoHeight, headerHeight, spacingPx, topPaddingPx) {
-        val offsets = IntArray(totalRows)
+        val offsetsBubble = IntArray(totalRows)
+        val offsetsSticky = IntArray(totalRows)
         var acc = 0
         for (r in 0 until totalRows) {
-            offsets[r] = acc
+            /*
+            Bubble should change in middle of header.
+            headerHeight = 50.dp.roundToPx() = padding(start = 12.dp, end = 12.dp, top = 18.dp, bottom = 8.dp) + style = MaterialTheme.typography.titleMedium = LineHeight: 24.sp (dp), FontSize: 16.sp (dp)
+            (18 + 8 + 24 = 50), the shift difference for headers therefore should be +25 for bubbles, while all others are identical.
+            Text is just centered in the remaining 24: 18.dp + 24.dp / 2
+            */
+            offsetsBubble[r] = if (r != 0 && isRowHeader[r]) (acc + with(density) { (18.dp + (50.dp - (8.dp + 18.dp)) / 2).roundToPx() }) else acc
+            offsetsSticky[r] = acc
             if (r == 0) acc += topPaddingPx
             val h = if (isRowHeader[r]) headerHeight else photoHeight
             acc += h + spacingPx
         }
-        offsets
+        Pair(offsetsBubble, offsetsSticky)
     }
+    val rowOffsetsBubble = rowOffsets.first
+    val rowOffsetsSticky = rowOffsets.second
 
     val totalContentHeight = remember(rowLayout, photoHeight, headerHeight, spacingPx, topPaddingPx, bottomPaddingPx) {
         var acc = topPaddingPx
@@ -3808,7 +3819,7 @@ private fun PhotoGrid(
     var suppressReleaseClickId by remember { mutableStateOf<Long?>(null) }
     val scrubberScope = rememberCoroutineScope()
 
-    val scrollFraction by remember(totalRows, rowOffsets, totalContentHeight) {
+    val scrollFraction by remember(totalRows, rowOffsetsSticky, totalContentHeight) {
         derivedStateOf {
             if (scrubberDragging) {
                 scrubFraction
@@ -3826,7 +3837,7 @@ private fun PhotoGrid(
                     val maxScrollPx = (totalContentHeight - viewportHeight).coerceAtLeast(1f)
                     val firstItem = visibleItems.first()
                     val row = itemToRow.getOrElse(firstItem.index) { 0 }
-                    val rowStartPx = rowOffsets.getOrElse(row) { 0 }
+                    val rowStartPx = rowOffsetsSticky.getOrElse(row) { 0 }
                     /*
                     "gridState.layoutInfo.visibleItemsInfo.offset.y" starts with value 0 at scrollposition 0 for the first visible item when "gridState.layoutInfo.visibleItemsInfo.first().index" is 0.
                     For all other scrollpositions and when "gridState.layoutInfo.visibleItemsInfo.first().index" IS NOT 0, it starts with the negative value of topPaddingPx. (For example: -18)
@@ -3834,7 +3845,7 @@ private fun PhotoGrid(
                     "gridState.firstVisibleItemIndex" can already change a value of topPaddingPx earlier, which means the item could be still in sight, when the next item is visible.
                     "gridState.layoutInfo.visibleItemsInfo.first().index" changes exactly when the last item is fully out of sight and an other item is visible.
                     */
-                    val currentScrollPx = rowStartPx - if(firstItem.index > 0) (firstItem.offset.y + topPaddingPx) else firstItem.offset.y
+                    val currentScrollPx = rowStartPx - if (firstItem.index > 0) (firstItem.offset.y + topPaddingPx) else firstItem.offset.y
                     (currentScrollPx / maxScrollPx).coerceIn(0f, 1f)
                 }
             }
@@ -3845,20 +3856,44 @@ private fun PhotoGrid(
 
         val viewportHeight = gridState.layoutInfo.viewportSize.height.toFloat()
         val maxScrollPx = (totalContentHeight - viewportHeight).coerceAtLeast(1f)
-        val currentScrollPx = (scrollFraction * maxScrollPx).toInt()
-        var row = rowOffsets.binarySearch(currentScrollPx)
+        val currentScrollPx = scrollFraction.coerceIn(0f, 1f) * maxScrollPx
+        var rowSticky = rowOffsetsSticky.binarySearch(currentScrollPx.toInt())
 
-        if (row < 0) {
-            row = (-row - 2).coerceIn(0, rowOffsets.lastIndex)
+        if (rowSticky < 0) {
+            rowSticky = (-rowSticky - 2).coerceIn(0, rowOffsetsSticky.lastIndex)
         }
 
-        if (isRowHeader.getOrElse(row) { false }) {
-            row = (row + 1).coerceAtMost(rowOffsets.lastIndex)
+        if (isRowHeader.getOrElse(rowSticky) { false }) {
+            rowSticky = (rowSticky + 1).coerceAtMost(rowOffsetsSticky.lastIndex)
         }
 
-        val index = rowToItem.getOrNull(row)?.coerceIn(0, timelineItems.lastIndex)
-        index?.let { timelineItems[it] }
+        var rowBubble = if (scrubberTrackHeightPx > 0f && scrubberBubbleHeightPx > 0f) {
+            val inset = with(density) { 16.dp.toPx() }
+            val thumbHeight = with(density) { 48.dp.toPx() }
+            val maxTravel = (scrubberTrackHeightPx - inset * 2f - thumbHeight).coerceAtLeast(0f)
+            val thumbTop = inset + scrollFraction.coerceIn(0f, 1f) * maxTravel
+            val thumbCenterY = thumbTop + thumbHeight / 2f
+
+            rowOffsetsBubble.binarySearch((currentScrollPx + thumbCenterY).toInt())
+        } else {
+            rowSticky
+        }
+
+        if (rowBubble < 0) {
+            rowBubble = (-rowBubble - 2).coerceIn(0, rowOffsetsBubble.lastIndex)
+        }
+
+        if (isRowHeader.getOrElse(rowBubble) { false }) {
+            rowBubble = (rowBubble + 1).coerceAtMost(rowOffsetsBubble.lastIndex)
+        }
+
+        val indexBubble = rowToItem.getOrNull(rowBubble)?.coerceIn(0, timelineItems.lastIndex)
+        val indexSticky = if (currentScrollPx.toInt() < topPaddingPx) null else rowToItem.getOrNull(rowSticky)?.coerceIn(0, timelineItems.lastIndex)
+        Pair(indexBubble?.let { timelineItems[it] }, indexSticky?.let { timelineItems[it] })
     } }
+    val visibleDateBubble = visibleDate?.first
+    val visibleDateSticky = visibleDate?.second
+
     val currentImages by rememberUpdatedState(images)
     val currentSelection by rememberUpdatedState(selectedIds)
     val currentSetSelection by rememberUpdatedState(onSetSelection)
@@ -4065,6 +4100,26 @@ private fun PhotoGrid(
               }
             }
         }
+        AnimatedVisibility(
+            visible = showTimeline && visibleDateSticky != null,
+            enter = fadeIn(tween(220)) + slideInVertically(animationSpec = tween(220, easing = FastOutSlowInEasing), initialOffsetY = { -it / 2 }),
+            exit = ExitTransition.None
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.75f))
+                    .padding(start = (gridSpacing.dp + 12).dp, end = (gridSpacing.dp + 12).dp, top = 18.dp, bottom = 8.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = visibleDateSticky?.let { formatTimelineLabel(it.dateTaken) } ?: "",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
         if (timelineItems.size > 15) {
             val isScrollerActive = gridState.isScrollInProgress || scrubberDragging
             val scrollerAlpha by animateFloatAsState(
@@ -4114,11 +4169,11 @@ private fun PhotoGrid(
                                     val frac = calculateFraction(y)
                                     scrubFraction = frac
                                     val targetScrollPx = (frac * maxScrollPx).toInt()
-                                    var targetRow = rowOffsets.binarySearch(targetScrollPx)
+                                    var targetRow = rowOffsetsSticky.binarySearch(targetScrollPx)
                                     if (targetRow < 0) {
                                         targetRow = (-targetRow - 2).coerceIn(0, totalRows - 1)
                                     }
-                                    val rowStart = rowOffsets[targetRow]
+                                    val rowStart = rowOffsetsSticky[targetRow]
                                     val remainder = (targetScrollPx - rowStart).coerceAtLeast(0)
                                     val targetIndex = rowToItem[targetRow]
                                     /*
@@ -4151,11 +4206,11 @@ private fun PhotoGrid(
                                     scrubberDragging = false
                                     scrubScrollJob?.cancel()
                                     val targetScrollPx = (scrubFraction * maxScrollPx).toInt()
-                                    var targetRow = rowOffsets.binarySearch(targetScrollPx)
+                                    var targetRow = rowOffsetsSticky.binarySearch(targetScrollPx)
                                     if (targetRow < 0) {
                                         targetRow = (-targetRow - 2).coerceIn(0, totalRows - 1)
                                     }
-                                    val rowStart = rowOffsets[targetRow]
+                                    val rowStart = rowOffsetsSticky[targetRow]
                                     val remainder = (targetScrollPx - rowStart).coerceAtLeast(0)
                                     val targetIndex = rowToItem[targetRow]
                                     /*
@@ -4234,7 +4289,7 @@ private fun PhotoGrid(
                     color = MaterialTheme.colorScheme.primaryContainer
                 ) {
                     Text(
-                        text = visibleDate?.let { formatTimelineLabel(it.dateTaken) } ?: "",
+                        text = visibleDateBubble?.let { formatTimelineLabel(it.dateTaken) } ?: "",
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
