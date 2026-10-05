@@ -18,7 +18,9 @@ import android.os.Environment
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.app.KeyguardManager
+import android.view.WindowManager
 import android.widget.Toast
+import kotlin.math.roundToInt
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -138,6 +140,8 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.LocationOff
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Comment
@@ -155,6 +159,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.produceState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -213,6 +218,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -295,6 +301,8 @@ import com.iris.gallery.data.StartupTab
 import com.iris.gallery.data.ThemeMode
 import com.iris.gallery.data.AccentColor
 import com.iris.gallery.data.ViewerHeaderStyle
+import com.iris.gallery.data.SecureSharingMode
+import androidx.exifinterface.media.ExifInterface
 import com.iris.gallery.ui.SettingsScreen
 import com.iris.gallery.ui.AboutScreen
 import androidx.compose.material.icons.outlined.Settings
@@ -449,6 +457,7 @@ private fun requiredPermissions(): Array<String> = when {
 
 private enum class MediaFormatFilter(val label: String) {
     ALL("All"),
+    VIDEOS("Videos"),
     RAW("RAW"),
     GIF("GIFs"),
     PANORAMA("Panoramas"),
@@ -727,6 +736,11 @@ private fun GalleryApp(
                 autoPlay = settings.autoPlayVideo,
                 loop = settings.loopVideo,
                 videoDoubleTapToZoom = settings.videoDoubleTapToZoom,
+                videoGestureControls = settings.videoGestureControls,
+                secureSharingMode = settings.secureSharingMode,
+                onSetSecureSharingMode = { settingsPreferences.setSecureSharingMode(it) },
+                dismissedSecureSharingTip = settings.dismissedSecureSharingTip,
+                onDismissSecureSharingTip = { settingsPreferences.setDismissedSecureSharingTip(true) },
                 showViewerUserComments = settings.showViewerUserComments,
                 viewerHeaderStyle = settings.viewerHeaderStyle,
                 showViewerPageCount = settings.showViewerPageCount,
@@ -798,12 +812,7 @@ private fun GalleryApp(
                         else -> state.images
                     }
                     requested.filterNot { it.id in libraryState.lockedMedia }
-                        .filterNot { img ->
-                            libraryState.excludedFolders.any { excluded ->
-                                val clean = excluded.trimEnd('/')
-                                img.path == clean || img.path.startsWith("$clean/")
-                            }
-                        }
+                        .filterNot { img -> isPathExcluded(img.path, libraryState.excludedFolders) }
                 }
                 val allLockedMedia = remember(vaultMedia, state.images, libraryState.lockedMedia) {
                     val galleryLocked = state.images.filter { it.id in libraryState.lockedMedia }
@@ -1460,6 +1469,173 @@ private fun getShareUri(context: android.content.Context, item: MediaImage): Uri
     }
 }
 
+private fun isPathExcluded(mediaPath: String, excludedFolders: Set<String>): Boolean {
+    if (excludedFolders.isEmpty() || mediaPath.isBlank()) return false
+    val normalizedMedia = mediaPath.trimEnd('/')
+    for (raw in excludedFolders) {
+        val clean = raw.trim().trimEnd('/')
+        if (clean.isBlank()) continue
+        if (normalizedMedia == clean || normalizedMedia.startsWith("$clean/")) {
+            return true
+        }
+        if (clean.startsWith("/")) {
+            val rel = clean.removePrefix("/")
+            val primary = "/storage/emulated/0/$rel"
+            if (normalizedMedia == primary || normalizedMedia.startsWith("$primary/")) {
+                return true
+            }
+            if (normalizedMedia.contains("$clean/")) {
+                return true
+            }
+        } else {
+            if (normalizedMedia.contains("/$clean/")) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+private val GPS_METADATA_TAGS = listOf(
+    ExifInterface.TAG_GPS_LATITUDE,
+    ExifInterface.TAG_GPS_LATITUDE_REF,
+    ExifInterface.TAG_GPS_LONGITUDE,
+    ExifInterface.TAG_GPS_LONGITUDE_REF,
+    ExifInterface.TAG_GPS_ALTITUDE,
+    ExifInterface.TAG_GPS_ALTITUDE_REF,
+    ExifInterface.TAG_GPS_TIMESTAMP,
+    ExifInterface.TAG_GPS_DATESTAMP,
+    ExifInterface.TAG_GPS_PROCESSING_METHOD,
+    ExifInterface.TAG_GPS_AREA_INFORMATION,
+    ExifInterface.TAG_GPS_SPEED,
+    ExifInterface.TAG_GPS_SPEED_REF,
+    ExifInterface.TAG_GPS_TRACK,
+    ExifInterface.TAG_GPS_TRACK_REF,
+    ExifInterface.TAG_GPS_IMG_DIRECTION,
+    ExifInterface.TAG_GPS_IMG_DIRECTION_REF,
+    ExifInterface.TAG_GPS_DEST_LATITUDE,
+    ExifInterface.TAG_GPS_DEST_LATITUDE_REF,
+    ExifInterface.TAG_GPS_DEST_LONGITUDE,
+    ExifInterface.TAG_GPS_DEST_LONGITUDE_REF,
+    ExifInterface.TAG_GPS_DEST_BEARING,
+    ExifInterface.TAG_GPS_DEST_BEARING_REF,
+    ExifInterface.TAG_GPS_DEST_DISTANCE,
+    ExifInterface.TAG_GPS_DEST_DISTANCE_REF,
+    ExifInterface.TAG_GPS_DIFFERENTIAL,
+    ExifInterface.TAG_GPS_H_POSITIONING_ERROR,
+)
+
+private val ALL_METADATA_TAGS = GPS_METADATA_TAGS + listOf(
+    ExifInterface.TAG_MAKE,
+    ExifInterface.TAG_MODEL,
+    ExifInterface.TAG_SOFTWARE,
+    ExifInterface.TAG_ARTIST,
+    ExifInterface.TAG_COPYRIGHT,
+    ExifInterface.TAG_IMAGE_DESCRIPTION,
+    ExifInterface.TAG_USER_COMMENT,
+    ExifInterface.TAG_DATETIME,
+    ExifInterface.TAG_DATETIME_ORIGINAL,
+    ExifInterface.TAG_DATETIME_DIGITIZED,
+    ExifInterface.TAG_SUBSEC_TIME,
+    ExifInterface.TAG_SUBSEC_TIME_ORIGINAL,
+    ExifInterface.TAG_SUBSEC_TIME_DIGITIZED,
+    ExifInterface.TAG_OFFSET_TIME,
+    ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
+    ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
+    ExifInterface.TAG_CAMERA_OWNER_NAME,
+    ExifInterface.TAG_BODY_SERIAL_NUMBER,
+    ExifInterface.TAG_LENS_MAKE,
+    ExifInterface.TAG_LENS_MODEL,
+    ExifInterface.TAG_LENS_SERIAL_NUMBER,
+    ExifInterface.TAG_LENS_SPECIFICATION,
+    ExifInterface.TAG_DEVICE_SETTING_DESCRIPTION,
+    ExifInterface.TAG_EXPOSURE_TIME,
+    ExifInterface.TAG_F_NUMBER,
+    ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
+    ExifInterface.TAG_SHUTTER_SPEED_VALUE,
+    ExifInterface.TAG_APERTURE_VALUE,
+    ExifInterface.TAG_BRIGHTNESS_VALUE,
+    ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
+    ExifInterface.TAG_MAX_APERTURE_VALUE,
+    ExifInterface.TAG_SUBJECT_DISTANCE,
+    ExifInterface.TAG_METERING_MODE,
+    ExifInterface.TAG_LIGHT_SOURCE,
+    ExifInterface.TAG_FLASH,
+    ExifInterface.TAG_FOCAL_LENGTH,
+    ExifInterface.TAG_MAKER_NOTE,
+    "XPTitle",
+    "XPComment",
+    "XPAuthor",
+    "XPKeywords",
+    "XPSubject",
+)
+
+private suspend fun prepareShareUris(
+    context: android.content.Context,
+    items: List<MediaImage>,
+    mode: SecureSharingMode
+): List<Uri> = withContext(Dispatchers.IO) {
+    if (mode == SecureSharingMode.OFF) {
+        return@withContext items.map { getShareUri(context, it) }
+    }
+
+    val cacheDir = File(context.cacheDir, "shared_media").apply { mkdirs() }
+    val now = System.currentTimeMillis()
+    cacheDir.listFiles()?.forEach { file ->
+        if (now - file.lastModified() > 30 * 60 * 1000L) {
+            file.delete()
+        }
+    }
+
+    val tagsToRemove = if (mode == SecureSharingMode.STRIP_ALL) ALL_METADATA_TAGS else GPS_METADATA_TAGS
+
+    items.map { item ->
+        if (item.isVideo) {
+            getShareUri(context, item)
+        } else {
+            val extension = item.name.substringAfterLast('.', "").ifBlank {
+                when {
+                    item.mimeType.contains("png") -> "png"
+                    item.mimeType.contains("webp") -> "webp"
+                    else -> "jpg"
+                }
+            }
+            val baseName = item.name.substringBeforeLast('.', "shared").ifBlank { "shared" }
+            val tempFile = File(cacheDir, "${baseName}_${System.currentTimeMillis()}.$extension")
+            val copySuccess = runCatching {
+                val inputStream = if (item.path.startsWith(context.filesDir.absolutePath)) {
+                    File(item.path).inputStream()
+                } else {
+                    context.contentResolver.openInputStream(item.uri)
+                }
+                inputStream?.use { input ->
+                    tempFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                true
+            }.getOrDefault(false)
+
+            if (copySuccess && tempFile.exists() && tempFile.length() > 0) {
+                runCatching {
+                    val exif = ExifInterface(tempFile.absolutePath)
+                    tagsToRemove.forEach { tag ->
+                        exif.setAttribute(tag, null)
+                    }
+                    exif.saveAttributes()
+                }
+                androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    tempFile
+                )
+            } else {
+                getShareUri(context, item)
+            }
+        }
+    }
+}
+
 @Composable
 private fun PermissionScreen(onGrant: () -> Unit) {
     Surface(
@@ -1753,6 +1929,14 @@ private fun GalleryScaffold(
     var fileSearchQuery by remember { mutableStateOf("") }
     var isFileSearching by remember { mutableStateOf(false) }
 
+    LaunchedEffect(destination, librarySection, selectedAlbumId) {
+        val canSearch = destination == 0 || destination == 2 || (destination == 1 && selectedAlbumId != null) || (destination == 3 && librarySection == "videos")
+        if (!canSearch && isFileSearching) {
+            isFileSearching = false
+            fileSearchQuery = ""
+        }
+    }
+
     fun filterMediaList(list: List<MediaImage>, query: String): List<MediaImage> {
         if (query.isBlank()) return list
         val q = query.trim()
@@ -1773,6 +1957,10 @@ private fun GalleryScaffold(
 
     val displayedPhotos = remember(images, fileSearchQuery) { filterMediaList(images, fileSearchQuery) }
     val displayedFavoritePhotos = remember(favoriteImages, fileSearchQuery) { filterMediaList(favoriteImages, fileSearchQuery) }
+    val displayedVideos = remember(images, fileSearchQuery) {
+        val allVideos = images.filter { it.isVideo }
+        filterMediaList(allVideos, fileSearchQuery)
+    }
     val effectiveAlbumMediaSort = selectedAlbum?.id?.let { albumMediaSortOverrides[it] } ?: albumMediaSort
     val displayedAlbumPhotos = remember(selectedAlbum, fileSearchQuery, effectiveAlbumMediaSort) {
         selectedAlbum?.let { album ->
@@ -1790,6 +1978,7 @@ private fun GalleryScaffold(
     val activeMedia = when {
         destination == 3 && librarySection == "trash" -> trashed
         destination == 3 && librarySection == "locked" -> lockedMedia
+        destination == 3 && librarySection == "videos" -> displayedVideos
         destination == 1 && selectedAlbum != null -> displayedAlbumPhotos
         destination == 2 -> displayedFavoritePhotos
         else -> displayedPhotos
@@ -1817,31 +2006,34 @@ private fun GalleryScaffold(
     fun shareSelection() {
         val selected = activeMedia.filter { it.id in selectedIds }
         if (selected.isEmpty()) return
-        val uris = ArrayList(selected.map { getShareUri(context, it) })
-        val mimeType = selected.map { it.mimeType.ifBlank { if (it.isVideo) "video/*" else "image/*" } }
-            .distinct()
-            .let { mimeTypes ->
-                when {
-                    mimeTypes.size == 1 -> mimeTypes.first()
-                    mimeTypes.all { it.startsWith("image/") } -> "image/*"
-                    mimeTypes.all { it.startsWith("video/") } -> "video/*"
-                    else -> "*/*"
+        tabScope.launch {
+            val uris = prepareShareUris(context, selected, settings.secureSharingMode)
+            if (uris.isEmpty()) return@launch
+            val mimeType = selected.map { it.mimeType.ifBlank { if (it.isVideo) "video/*" else "image/*" } }
+                .distinct()
+                .let { mimeTypes ->
+                    when {
+                        mimeTypes.size == 1 -> mimeTypes.first()
+                        mimeTypes.all { it.startsWith("image/") } -> "image/*"
+                        mimeTypes.all { it.startsWith("video/") } -> "video/*"
+                        else -> "*/*"
+                    }
                 }
+            val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
+                type = mimeType
+                if (uris.size == 1) {
+                    putExtra(Intent.EXTRA_STREAM, uris.first())
+                    putExtra(Intent.EXTRA_TITLE, selected.first().name)
+                } else {
+                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                }
+                clipData = ClipData.newUri(context.contentResolver, mimeType, uris.first()).apply {
+                    uris.drop(1).forEach { addItem(ClipData.Item(it)) }
+                }
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-        val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
-            type = mimeType
-            if (uris.size == 1) {
-                putExtra(Intent.EXTRA_STREAM, uris.first())
-                putExtra(Intent.EXTRA_TITLE, selected.first().name)
-            } else {
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-            }
-            clipData = ClipData.newUri(context.contentResolver, mimeType, uris.first()).apply {
-                uris.drop(1).forEach { addItem(ClipData.Item(it)) }
-            }
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
         }
-        context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
     }
     val availableAlbums = remember(images, albumCovers) {
         images.groupBy { it.bucketId }.map { (id, media) ->
@@ -1901,9 +2093,16 @@ private fun GalleryScaffold(
     val handleTabSelected: (Int) -> Unit = { index ->
         tabScope.launch {
             val current = tabPagerState.currentPage
+            if (isFileSearching) {
+                isFileSearching = false
+                fileSearchQuery = ""
+            }
             if (current == index) {
                 if (index == 1) selectedAlbumId = null
-                if (index == 3) librarySection = null
+                if (index == 3) {
+                    librarySection = null
+                    selectedLockedAlbum = null
+                }
             } else if (kotlin.math.abs(current - index) > 1) {
                 tabPagerState.scrollToPage(index)
             } else {
@@ -1918,17 +2117,29 @@ private fun GalleryScaffold(
         Scaffold(
         topBar = {
           if (!(destination == 3 && librarySection == "folder_view")) {
+            val canSearchOnScreen = destination == 0 || destination == 2 || (destination == 1 && selectedAlbum != null) || (destination == 3 && librarySection == "videos")
             TopAppBar(
                 title = {
-                    if (isFileSearching) {
+                    if (isFileSearching && canSearchOnScreen) {
                         OutlinedTextField(
                             value = fileSearchQuery,
                             onValueChange = { fileSearchQuery = it },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
                                 platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false)
                             ),
-                            placeholder = { Text(stringResource(R.string.search_files_placeholder), style = MaterialTheme.typography.bodyLarge) },
+                            placeholder = {
+                                Text(
+                                    text = stringResource(
+                                        if (destination == 3 && librarySection == "videos") R.string.search_videos_placeholder
+                                        else R.string.search_files_placeholder
+                                    ),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                             trailingIcon = {
                                 if (fileSearchQuery.isNotEmpty()) {
@@ -1950,6 +2161,7 @@ private fun GalleryScaffold(
                         val count = if (selectedIds.isNotEmpty()) stringResource(R.string.selected_count, selectedIds.size)
                             else when {
                                 destination == 1 && selectedAlbum != null -> selectedAlbum!!.name
+                                destination == 3 && librarySection == "videos" -> stringResource(R.string.section_videos)
                                 destination == 3 && librarySection == "trash" -> stringResource(R.string.section_trash)
                                 destination == 3 && librarySection == "locked" -> if (selectedLockedAlbum != null) selectedLockedAlbum!! else stringResource(R.string.section_locked)
                                 destination == 3 && librarySection == "duplicates" -> stringResource(R.string.section_duplicates)
@@ -1973,18 +2185,25 @@ private fun GalleryScaffold(
                     }
                 },
                 navigationIcon = {
-                    if (isFileSearching) {
+                    if (isFileSearching && canSearchOnScreen) {
                         IconButton(onClick = { isFileSearching = false; fileSearchQuery = "" }) {
                             Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.clear_search))
                         }
                     } else if (selectedIds.isNotEmpty()) {
                         IconButton(onClick = ::clearSelection) { Icon(Icons.Outlined.Close, stringResource(R.string.action_clear_selection)) }
                     } else if (destination == 1 && selectedAlbum != null) {
-                        IconButton(onClick = { selectedAlbumId = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, albumsTabLabel) }
+                        IconButton(onClick = {
+                            selectedAlbumId = null
+                            if (isFileSearching) { isFileSearching = false; fileSearchQuery = "" }
+                        }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, albumsTabLabel) }
                     } else if (destination == 3 && librarySection == "locked" && selectedLockedAlbum != null) {
                         IconButton(onClick = { selectedLockedAlbum = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.section_locked)) }
                     } else if (destination == 3 && librarySection != null) {
-                        IconButton(onClick = { librarySection = null; selectedLockedAlbum = null }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, libraryTabLabel) }
+                        IconButton(onClick = {
+                            librarySection = null
+                            selectedLockedAlbum = null
+                            if (isFileSearching) { isFileSearching = false; fileSearchQuery = "" }
+                        }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, libraryTabLabel) }
                     }
                 },
                 actions = {
@@ -2077,18 +2296,35 @@ private fun GalleryScaffold(
                                             onLockMedia(selected)
                                         })
                                 }
-                                DropdownMenuItem(text = { Text(stringResource(R.string.action_favorite)) }, leadingIcon = { Icon(Icons.Outlined.FavoriteBorder, null) },
+                                 val allSelectedAreFavorites = selectedIds.isNotEmpty() && selectedIds.all { it in favorites }
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (allSelectedAreFavorites) R.string.action_unfavorite
+                                                else R.string.action_favorite
+                                            )
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        if (allSelectedAreFavorites) {
+                                            Icon(Icons.Filled.Favorite, null, tint = MaterialTheme.colorScheme.primary)
+                                        } else {
+                                            Icon(Icons.Outlined.FavoriteBorder, null)
+                                        }
+                                    },
                                     onClick = {
                                         selectionMenuExpanded = false
-                                        val makeFavorite = selectedIds.any { it !in favorites }
+                                        val makeFavorite = !allSelectedAreFavorites
                                         selectedIds.forEach { id -> if ((id in favorites) != makeFavorite) onToggleFavorite(id) }
                                         clearSelection()
-                                    })
+                                    }
+                                )
                             }
                         }
-                    } else if (!isFileSearching) {
-                        val canSearch = destination == 0 || destination == 2 || (destination == 1 && selectedAlbum != null)
-                        if (canSearch) {
+                    } else if (!isFileSearching || !canSearchOnScreen) {
+                        val canSearch = destination == 0 || destination == 2 || (destination == 1 && selectedAlbum != null) || (destination == 3 && librarySection == "videos")
+                        if (canSearch && !isFileSearching) {
                             IconButton(onClick = { isFileSearching = true }) {
                                 Icon(Icons.Outlined.Search, stringResource(R.string.action_search))
                             }
@@ -2305,7 +2541,7 @@ private fun GalleryScaffold(
         else -> HorizontalPager(
           state = tabPagerState,
           beyondViewportPageCount = 3,
-          userScrollEnabled = selectedIds.isEmpty(),
+          userScrollEnabled = selectedIds.isEmpty() && selectedAlbum == null && (destination != 3 || librarySection == null),
           modifier = Modifier.fillMaxSize(),
         ) { page ->
           when (page) {
@@ -2350,6 +2586,7 @@ private fun GalleryScaffold(
                     showVideoDuration = settings.showVideoDurationBadge,
                     showFormatBadge = settings.showMediaFormatBadge,
                     selectedIds = selectedIds,
+                    favorites = favorites,
                     onToggleSelection = if (onPick == null) ::toggleSelection else null,
                     onSetSelection = if (onPick == null) ::setSelection else null,
                     onSetDateSelection = if (onPick == null) ::setDateSelection else null,
@@ -2400,7 +2637,9 @@ private fun GalleryScaffold(
                       gridSpacing = settings.gridSpacing,
                       showVideoDuration = settings.showVideoDurationBadge,
                       showFormatBadge = settings.showMediaFormatBadge,
-                      selectedIds = selectedIds, onToggleSelection = if (onPick == null) ::toggleSelection else null,
+                      selectedIds = selectedIds,
+                      favorites = favorites,
+                      onToggleSelection = if (onPick == null) ::toggleSelection else null,
                       onSetSelection = if (onPick == null) ::setSelection else null,
                       onSetDateSelection = if (onPick == null) ::setDateSelection else null,
                     ) { if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedAlbumPhotos; selectedId = it.id } }
@@ -2450,6 +2689,8 @@ private fun GalleryScaffold(
                             showVideoDuration = settings.showVideoDurationBadge,
                             showFormatBadge = settings.showMediaFormatBadge,
                             selectedIds = selectedIds,
+                            favorites = favorites,
+                            showFavoriteBadge = false,
                             onToggleSelection = ::toggleSelection,
                             onSetSelection = ::setSelection,
                         ) {
@@ -2493,6 +2734,7 @@ private fun GalleryScaffold(
                                     showVideoDuration = settings.showVideoDurationBadge,
                                     showFormatBadge = settings.showMediaFormatBadge,
                                     selectedIds = selectedIds,
+                                    favorites = favorites,
                                     onToggleSelection = ::toggleSelection,
                                     onSetSelection = ::setSelection,
                                 ) {
@@ -2590,7 +2832,8 @@ private fun GalleryScaffold(
                                             gridSpacing = settings.gridSpacing,
                                             showVideoDuration = settings.showVideoDurationBadge,
                                             showFormatBadge = settings.showMediaFormatBadge,
-                                            selectedIds = selectedIds,
+                                             selectedIds = selectedIds,
+                                            favorites = favorites,
                                             onToggleSelection = ::toggleSelection,
                                             onSetSelection = ::setSelection,
                                         ) {
@@ -2614,6 +2857,7 @@ private fun GalleryScaffold(
                                     showVideoDuration = settings.showVideoDurationBadge,
                                     showFormatBadge = settings.showMediaFormatBadge,
                                     selectedIds = selectedIds,
+                                    favorites = favorites,
                                     onToggleSelection = ::toggleSelection,
                                     onSetSelection = ::setSelection,
                                 ) {
@@ -2696,6 +2940,7 @@ private fun GalleryScaffold(
                                     showVideoDuration = settings.showVideoDurationBadge,
                                     showFormatBadge = settings.showMediaFormatBadge,
                                     selectedIds = selectedIds,
+                                    favorites = favorites,
                                     onToggleSelection = ::toggleSelection,
                                     onSetSelection = ::setSelection,
                                 ) {
@@ -2706,15 +2951,17 @@ private fun GalleryScaffold(
                         }
                         "formats" -> {
                             var formatFilter by remember { mutableStateOf(MediaFormatFilter.ALL) }
+                            val allVideos = remember(images) { images.filter { it.isVideo } }
                             val allRaw = remember(images) { images.filter { it.isRaw } }
                             val allGifs = remember(images) { images.filter { it.isGif } }
                             val allPanos = remember(images) { images.filter { it.isPanorama } }
                             val allMotion = remember(images) { images.filter { it.isMotionPhoto } }
-                            val allSpecial = remember(allRaw, allGifs, allPanos, allMotion) {
-                                (allRaw + allGifs + allPanos + allMotion).distinctBy { it.id }.sortedByDescending { it.dateTaken }
+                            val allSpecial = remember(allVideos, allRaw, allGifs, allPanos, allMotion) {
+                                (allVideos + allRaw + allGifs + allPanos + allMotion).distinctBy { it.id }.sortedByDescending { it.dateTaken }
                             }
                             val currentFiltered = when (formatFilter) {
                                 MediaFormatFilter.ALL -> allSpecial
+                                MediaFormatFilter.VIDEOS -> allVideos
                                 MediaFormatFilter.RAW -> allRaw
                                 MediaFormatFilter.GIF -> allGifs
                                 MediaFormatFilter.PANORAMA -> allPanos
@@ -2734,6 +2981,13 @@ private fun GalleryScaffold(
                                                 selected = formatFilter == MediaFormatFilter.ALL,
                                                 onClick = { formatFilter = MediaFormatFilter.ALL },
                                                 label = { Text(stringResource(R.string.filter_all_count, allSpecial.size)) },
+                                            )
+                                        }
+                                        if (allVideos.isNotEmpty()) item {
+                                            FilterChip(
+                                                selected = formatFilter == MediaFormatFilter.VIDEOS,
+                                                onClick = { formatFilter = MediaFormatFilter.VIDEOS },
+                                                label = { Text(stringResource(R.string.filter_videos_count, allVideos.size)) },
                                             )
                                         }
                                         if (allRaw.isNotEmpty()) item {
@@ -2777,8 +3031,9 @@ private fun GalleryScaffold(
                                             cornerStyle = settings.cornerStyle,
                                             gridSpacing = settings.gridSpacing,
                                             showVideoDuration = settings.showVideoDurationBadge,
-                                            showFormatBadge = settings.showMediaFormatBadge,
+                                             showFormatBadge = settings.showMediaFormatBadge,
                                             selectedIds = selectedIds,
+                                            favorites = favorites,
                                             onToggleSelection = if (onPick == null) ::toggleSelection else null,
                                             onSetSelection = if (onPick == null) ::setSelection else null,
                                         ) {
@@ -2799,6 +3054,7 @@ private fun GalleryScaffold(
                                 gridSpacing = settings.gridSpacing,
                                 showVideoDuration = settings.showVideoDurationBadge,
                                 showFormatBadge = settings.showMediaFormatBadge,
+                                favorites = favorites,
                             ) { editorImage = it }
                         }
                         "duplicates" -> DuplicateReviewScreen(
@@ -2815,13 +3071,48 @@ private fun GalleryScaffold(
                             gridSpacing = settings.gridSpacing,
                             timelineDateFormat = settings.timelineDateFormat,
                             customTimelineDateFormat = settings.customTimelineDateFormat,
+                            favorites = favorites,
                             onOpenMedia = { media, folderMediaList ->
                                 viewerImages = folderMediaList
                                 selectedId = media.id
                             },
                             onBack = { librarySection = null }
                         )
-                        else -> LibraryScreen(padding, trashed.size, lockedMedia.size) {
+                        "videos" -> {
+                            val videos = displayedVideos
+                            if (videos.isEmpty()) {
+                                if (fileSearchQuery.isNotBlank()) EmptyState(stringResource(R.string.empty_search_files, fileSearchQuery), padding)
+                                else EmptyState(stringResource(R.string.empty_videos), padding)
+                            } else {
+                                PhotoGrid(
+                                    images = videos,
+                                    padding = padding,
+                                    gridState = libraryGridState,
+                                    cellSize = photoCellSize,
+                                    onCellSizeChange = onCellSizeChange,
+                                    showTimeline = settings.showTimelineHeaders && fileSearchQuery.isBlank(),
+                                    timelineDateFormat = settings.timelineDateFormat,
+                                    customTimelineDateFormat = settings.customTimelineDateFormat,
+                                    useRelativeDates = settings.useRelativeDates,
+                                    showDayOfWeek = settings.showDayOfWeek,
+                                    abbreviateDayOfWeek = settings.abbreviateDayOfWeek,
+                                    cornerStyle = settings.cornerStyle,
+                                    gridSpacing = settings.gridSpacing,
+                                    showVideoDuration = settings.showVideoDurationBadge,
+                                    showFormatBadge = settings.showMediaFormatBadge,
+                                    selectedIds = selectedIds,
+                                    favorites = favorites,
+                                    onToggleSelection = if (onPick == null) ::toggleSelection else null,
+                                    onSetSelection = if (onPick == null) ::setSelection else null,
+                                    onSetDateSelection = if (onPick == null) ::setDateSelection else null,
+                                ) {
+                                    if (selectedIds.isNotEmpty()) toggleSelection(it.id)
+                                    else if (onPick != null) onPick(it)
+                                    else { viewerImages = videos; selectedId = it.id }
+                                }
+                            }
+                        }
+                        else -> LibraryScreen(padding, trashed.size, lockedMedia.size, images.count { it.isVideo }) {
                             if (it == "rescan") {
                                 onRescanMedia()
                             } else if (it == "excluded_folders") {
@@ -2852,6 +3143,8 @@ private fun GalleryScaffold(
                     showVideoDuration = settings.showVideoDurationBadge,
                     showFormatBadge = settings.showMediaFormatBadge,
                     selectedIds = selectedIds,
+                    favorites = favorites,
+                    showFavoriteBadge = false,
                     onToggleSelection = if (onPick == null) ::toggleSelection else null,
                     onSetSelection = if (onPick == null) ::setSelection else null,
                     onSetDateSelection = if (onPick == null) ::setDateSelection else null,
@@ -2931,6 +3224,7 @@ private fun GalleryScaffold(
         com.iris.gallery.ui.ExcludedFoldersDialog(
             excludedFolders = excludedFolders,
             onRemoveExcludedFolder = onRemoveExcludedFolder,
+            onAddExcludedFolder = onAddExcludedFolder,
             onDismissRequest = { showExcludedFoldersDialog = false }
         )
     }
@@ -3131,11 +3425,23 @@ private fun GalleryScaffold(
         )
     }
 
-    BackHandler(enabled = isFileSearching) { isFileSearching = false; fileSearchQuery = "" }
     BackHandler(enabled = !isFileSearching && selectedIds.isNotEmpty()) { clearSelection() }
-    BackHandler(enabled = selectedIds.isEmpty() && destination == 1 && selectedAlbum != null) { selectedAlbumId = null }
-    BackHandler(enabled = selectedIds.isEmpty() && destination == 3 && librarySection == "locked" && selectedLockedAlbum != null) { selectedLockedAlbum = null }
-    BackHandler(enabled = selectedIds.isEmpty() && destination == 3 && librarySection != null && (librarySection != "locked" || selectedLockedAlbum == null)) { librarySection = null; selectedLockedAlbum = null }
+    BackHandler(enabled = selectedIds.isEmpty() && destination == 1 && selectedAlbum != null && !isFileSearching) {
+        selectedAlbumId = null
+        if (isFileSearching) { isFileSearching = false; fileSearchQuery = "" }
+    }
+    BackHandler(enabled = selectedIds.isEmpty() && destination == 3 && librarySection == "locked" && selectedLockedAlbum != null && !isFileSearching) {
+        selectedLockedAlbum = null
+    }
+    BackHandler(enabled = selectedIds.isEmpty() && destination == 3 && librarySection != null && (librarySection != "locked" || selectedLockedAlbum == null) && !isFileSearching) {
+        librarySection = null
+        selectedLockedAlbum = null
+        if (isFileSearching) { isFileSearching = false; fileSearchQuery = "" }
+    }
+    BackHandler(enabled = isFileSearching) {
+        isFileSearching = false
+        fileSearchQuery = ""
+    }
     BackHandler(enabled = editorImage != null) { editorImage = null }
     BackHandler(enabled = externalMedia != null) { externalMedia = null }
 
@@ -3147,6 +3453,7 @@ private fun GalleryScaffold(
             autoPlay = settings.autoPlayVideo,
             loop = settings.loopVideo,
             videoDoubleTapToZoom = settings.videoDoubleTapToZoom,
+            videoGestureControls = settings.videoGestureControls,
             showViewerUserComments = settings.showViewerUserComments,
             viewerHeaderStyle = settings.viewerHeaderStyle,
             showViewerPageCount = settings.showViewerPageCount,
@@ -3165,6 +3472,10 @@ private fun GalleryScaffold(
             isInTrash = false,
             confirmDeleteSetting = settings.confirmDelete,
             deleteMode = settings.deleteMode,
+            secureSharingMode = settings.secureSharingMode,
+            onSetSecureSharingMode = { settingsPreferences.setSecureSharingMode(it) },
+            dismissedSecureSharingTip = settings.dismissedSecureSharingTip,
+            onDismissSecureSharingTip = { settingsPreferences.setDismissedSecureSharingTip(true) },
             videoMuted = settings.videoMuted,
             onSetVideoMuted = { settingsPreferences.setVideoMuted(it) },
             preferredEditor = settings.preferredEditor,
@@ -3235,6 +3546,7 @@ private fun GalleryScaffold(
             autoPlay = settings.autoPlayVideo,
             loop = settings.loopVideo,
             videoDoubleTapToZoom = settings.videoDoubleTapToZoom,
+            videoGestureControls = settings.videoGestureControls,
             showViewerUserComments = settings.showViewerUserComments,
             viewerHeaderStyle = settings.viewerHeaderStyle,
             showViewerPageCount = settings.showViewerPageCount,
@@ -3253,6 +3565,10 @@ private fun GalleryScaffold(
             isInTrash = isViewingTrash,
             confirmDeleteSetting = settings.confirmDelete,
             deleteMode = settings.deleteMode,
+            secureSharingMode = settings.secureSharingMode,
+            onSetSecureSharingMode = { settingsPreferences.setSecureSharingMode(it) },
+            dismissedSecureSharingTip = settings.dismissedSecureSharingTip,
+            onDismissSecureSharingTip = { settingsPreferences.setDismissedSecureSharingTip(true) },
             videoMuted = settings.videoMuted,
             onSetVideoMuted = { settingsPreferences.setVideoMuted(it) },
             preferredEditor = settings.preferredEditor,
@@ -3457,6 +3773,7 @@ private fun GalleryScaffold(
                 preferences = settingsPreferences,
                 excludedFolders = excludedFolders,
                 onRemoveExcludedFolder = onRemoveExcludedFolder,
+                onAddExcludedFolder = onAddExcludedFolder,
                 onOpenAbout = { activeOverlayScreen = "about" },
                 onRescanMedia = onRescanMedia,
                 onBack = { activeOverlayScreen = null }
@@ -3634,6 +3951,8 @@ private fun PhotoGrid(
     showVideoDuration: Boolean = true,
     showFormatBadge: Boolean = true,
     selectedIds: Set<Long> = emptySet(),
+    favorites: Set<Long> = emptySet(),
+    showFavoriteBadge: Boolean = true,
     onToggleSelection: ((Long) -> Unit)? = null,
     onSetSelection: ((Long, Boolean) -> Unit)? = null,
     onSetDateSelection: ((List<Long>, Boolean) -> Unit)? = null,
@@ -3691,12 +4010,13 @@ private fun PhotoGrid(
     val screenWidthDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
     val density = androidx.compose.ui.platform.LocalDensity.current
     val actualColumns = remember(screenWidthDp, cellSize, gridSpacing, density, startPadding, endPadding) {
-        with(density) {
-            val availableWidthPx = (screenWidthDp.dp - startPadding - endPadding - (gridSpacing.dp * 2).dp).roundToPx()
-            val minSizePx = cellSize.roundToPx()
-            val spacingPx = (gridSpacing.dp).dp.roundToPx()
-            maxOf(1, (availableWidthPx + spacingPx) / (minSizePx + spacingPx))
-        }
+        com.iris.gallery.ui.GridCalculations.calculatePhotoColumns(
+            screenWidthDp = screenWidthDp,
+            cellSizeDp = cellSize.value,
+            gridSpacingDp = gridSpacing.dp.toFloat(),
+            density = density,
+            horizontalPaddingDp = (startPadding + endPadding).value / 2f
+        )
     }
 
     val spacingPx = remember(gridSpacing, density) { with(density) { (gridSpacing.dp).dp.roundToPx() } }
@@ -3886,14 +4206,14 @@ private fun PhotoGrid(
                             if (kotlin.math.abs(zoom - 1f) > 0.001f) {
                                 val nextSize = (currentCellSize.value * zoom).coerceIn(36f, 320f)
                                 currentOnCellSizeChange?.invoke(nextSize.dp)
-                                event.changes.forEach { it.consume() }
                             }
+                            event.changes.forEach { it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
                 }
             }
     ) {
-        val targetThumbnailPx = remember(cellSize) { com.iris.gallery.ui.getThumbnailTargetSizePx(cellSize.value) }
+        val targetThumbnailPx = remember(actualColumns) { com.iris.gallery.ui.getThumbnailTargetSizePx(actualColumns) }
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Adaptive(cellSize),
@@ -4040,6 +4360,7 @@ private fun PhotoGrid(
                         targetSizePx = targetThumbnailPx,
                         showVideoDuration = showVideoDuration,
                         showFormatBadge = showFormatBadge,
+                        isFavorite = showFavoriteBadge && (image.id in favorites),
                     )
                     AnimatedVisibility(selected, enter = fadeIn(tween(120)) + scaleIn(tween(160)),
                         exit = fadeOut(tween(100)) + scaleOut(tween(120)),
@@ -4172,10 +4493,24 @@ private fun PhotoGrid(
             }
 
             AnimatedVisibility(
-                visible = scrubberDragging,
+                visible = scrubberDragging && showTimeline && visibleDate != null,
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 42.dp),
+                    .align(Alignment.TopEnd)
+                    .padding(end = 42.dp, bottom = bottomPadding)
+                    .layout { measurable, constraints ->
+                        val placeable = measurable.measure(constraints)
+                        val insetPx = 16.dp.toPx()
+                        val thumbHeightPx = 48.dp.toPx()
+                        val maxTravel = (constraints.maxHeight - insetPx * 2 - thumbHeightPx).coerceAtLeast(1f)
+                        val thumbCenterY = insetPx + (thumbHeightPx / 2f) + (scrollFraction.coerceIn(0f, 1f) * maxTravel)
+                        val targetY = (thumbCenterY - placeable.height / 2f).coerceIn(
+                            insetPx,
+                            (constraints.maxHeight - insetPx - placeable.height).coerceAtLeast(insetPx)
+                        ).roundToInt()
+                        layout(placeable.width, placeable.height) {
+                            placeable.placeRelative(0, targetY)
+                        }
+                    },
                 enter = fadeIn(tween(120)) + scaleIn(tween(180), initialScale = .88f),
                 exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = .9f)
             ) {
@@ -4206,6 +4541,7 @@ private fun PhotoViewer(
     autoPlay: Boolean = true,
     loop: Boolean = true,
     videoDoubleTapToZoom: Boolean = false,
+    videoGestureControls: Boolean = true,
     showViewerUserComments: Boolean = true,
     viewerHeaderStyle: ViewerHeaderStyle = ViewerHeaderStyle.DATE,
     showViewerPageCount: Boolean = true,
@@ -4224,6 +4560,10 @@ private fun PhotoViewer(
     isInTrash: Boolean = false,
     confirmDeleteSetting: Boolean = false,
     deleteMode: DeleteMode = DeleteMode.TRASH,
+    secureSharingMode: SecureSharingMode = SecureSharingMode.OFF,
+    onSetSecureSharingMode: (SecureSharingMode) -> Unit = {},
+    dismissedSecureSharingTip: Boolean = false,
+    onDismissSecureSharingTip: () -> Unit = {},
     videoMuted: Boolean = false,
     onSetVideoMuted: (Boolean) -> Unit = {},
     preferredEditor: PreferredEditor = PreferredEditor.ALWAYS_ASK,
@@ -4260,6 +4600,13 @@ private fun PhotoViewer(
         }
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.window?.let { win ->
+                val lp = win.attributes
+                if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
+                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    win.attributes = lp
+                }
+            }
             insetsController?.apply {
                 systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
                 show(WindowInsetsCompat.Type.systemBars())
@@ -4268,6 +4615,13 @@ private fun PhotoViewer(
     }
     val handleClose = {
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        activity?.window?.let { win ->
+            val lp = win.attributes
+            if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
+                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                win.attributes = lp
+            }
+        }
         insetsController?.apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
             show(WindowInsetsCompat.Type.systemBars())
@@ -4301,7 +4655,24 @@ private fun PhotoViewer(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showWallpaperSheet by remember { mutableStateOf(false) }
     var viewerAlbumAction by remember { mutableStateOf<AlbumAction?>(null) }
+    var showSecureSharingHintDialog by remember { mutableStateOf(false) }
+    var showSecureSharingModePicker by remember { mutableStateOf(false) }
     val current = images[pagerState.currentPage]
+    val doShare: (MediaImage) -> Unit = { media ->
+        coroutineScope.launch {
+            val uris = prepareShareUris(context, listOf(media), secureSharingMode)
+            val shareUri = uris.firstOrNull() ?: getShareUri(context, media)
+            val mimeType = media.mimeType.ifBlank { if (media.isVideo) "video/*" else "image/*" }
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, shareUri)
+                putExtra(Intent.EXTRA_TITLE, media.name)
+                clipData = ClipData.newUri(context.contentResolver, mimeType, shareUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
+        }
+    }
     val currentExif by produceState<ExifMetadata?>(initialValue = null, current.id, current.uri, current.dateTaken, current.description, current.title) {
         value = withContext(Dispatchers.IO) {
             loadExifMetadata(context, current.uri, current.path)
@@ -4415,6 +4786,7 @@ private fun PhotoViewer(
                     autoPlay = autoPlay,
                     loop = loop,
                     doubleTapToZoom = videoDoubleTapToZoom,
+                    gestureControls = videoGestureControls,
                     onTap = { controlsVisible = !controlsVisible },
                     onSwipeUp = { showInfo = true },
                     onSwipeDown = { triggerAnimatedDismiss() },
@@ -4882,6 +5254,61 @@ private fun PhotoViewer(
                 }
             }
 
+            // Dismissible Secure Sharing Tip Banner
+            if (!dismissedSecureSharingTip) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    tonalElevation = 4.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showSecureSharingModePicker = true },
+                        ) {
+                            Icon(
+                                Icons.Outlined.Security,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = stringResource(
+                                    when (secureSharingMode) {
+                                        SecureSharingMode.STRIP_LOCATION -> R.string.viewer_secure_sharing_tip_location
+                                        SecureSharingMode.STRIP_ALL -> R.string.viewer_secure_sharing_tip_all
+                                        SecureSharingMode.OFF -> R.string.viewer_secure_sharing_tip_off
+                                    }
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                            )
+                        }
+                        IconButton(
+                            onClick = onDismissSecureSharingTip,
+                            modifier = Modifier.size(24.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.Close,
+                                contentDescription = stringResource(R.string.action_close),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
@@ -4920,18 +5347,14 @@ private fun PhotoViewer(
                     ViewerIconButton(
                         icon = Icons.Outlined.Share,
                         label = stringResource(R.string.action_share),
+                        showBadge = secureSharingMode != SecureSharingMode.OFF,
                         modifier = Modifier.weight(1f),
                     ) {
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            val mimeType = current.mimeType.ifBlank { if (current.isVideo) "video/*" else "image/*" }
-                            type = mimeType
-                            val shareUri = getShareUri(context, current)
-                            putExtra(Intent.EXTRA_STREAM, shareUri)
-                            putExtra(Intent.EXTRA_TITLE, current.name)
-                            clipData = ClipData.newUri(context.contentResolver, mimeType, shareUri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        if (!dismissedSecureSharingTip) {
+                            showSecureSharingHintDialog = true
+                        } else {
+                            doShare(current)
                         }
-                        context.startActivity(Intent.createChooser(intent, context.getString(R.string.action_share_media)))
                     }
                     if (current.id > 0) {
                         ViewerIconButton(
@@ -5294,6 +5717,170 @@ private fun PhotoViewer(
             }
         )
     }
+
+    if (showSecureSharingHintDialog) {
+        AlertDialog(
+            onDismissRequest = { showSecureSharingHintDialog = false },
+            icon = {
+                Icon(
+                    Icons.Outlined.Security,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = { Text(stringResource(R.string.dialog_secure_sharing_hint_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        stringResource(R.string.dialog_secure_sharing_hint_desc),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                showSecureSharingHintDialog = false
+                                showSecureSharingModePicker = true
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    stringResource(R.string.settings_secure_sharing_title),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    stringResource(secureSharingMode.getTitleRes()),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (secureSharingMode != SecureSharingMode.OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            TextButton(onClick = {
+                                showSecureSharingHintDialog = false
+                                showSecureSharingModePicker = true
+                            }) {
+                                Text(stringResource(R.string.action_configure))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showSecureSharingHintDialog = false
+                    onDismissSecureSharingTip()
+                    doShare(current)
+                }) {
+                    Text(stringResource(R.string.action_share))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showSecureSharingHintDialog = false
+                    onDismissSecureSharingTip()
+                }) {
+                    Text(stringResource(R.string.action_dont_show_again))
+                }
+            }
+        )
+    }
+
+    if (showSecureSharingModePicker) {
+        AlertDialog(
+            onDismissRequest = { showSecureSharingModePicker = false },
+            icon = {
+                Icon(
+                    Icons.Outlined.Security,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = { Text(stringResource(R.string.settings_secure_sharing_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        stringResource(R.string.settings_secure_sharing_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    SecureSharingMode.values().forEach { mode ->
+                        val isSelected = secureSharingMode == mode
+                        val modeIcon = when (mode) {
+                            SecureSharingMode.OFF -> Icons.Outlined.Share
+                            SecureSharingMode.STRIP_LOCATION -> Icons.Outlined.LocationOff
+                            SecureSharingMode.STRIP_ALL -> Icons.Outlined.Security
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                            border = BorderStroke(
+                                width = if (isSelected) 1.5.dp else 0.5.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    onSetSecureSharingMode(mode)
+                                    showSecureSharingModePicker = false
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    modeIcon,
+                                    contentDescription = null,
+                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        stringResource(mode.getTitleRes()),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        stringResource(mode.getDescriptionRes()),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = {
+                                        onSetSecureSharingMode(mode)
+                                        showSecureSharingModePicker = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSecureSharingModePicker = false }) {
+                    Text(stringResource(R.string.action_done_editing))
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -5591,20 +6178,32 @@ private fun ViewerIconButton(
     modifier: Modifier = Modifier,
     tint: Color = MaterialTheme.colorScheme.onSurface,
     scaleEffect: Float = 1f,
+    showBadge: Boolean = false,
+    badgeColor: Color = MaterialTheme.colorScheme.primary,
     onClick: () -> Unit
 ) {
     IconButton(
         onClick = onClick,
         modifier = modifier.height(48.dp)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = tint,
-            modifier = Modifier
-                .size(24.dp)
-                .scale(scaleEffect)
-        )
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = tint,
+                modifier = Modifier
+                    .size(24.dp)
+                    .scale(scaleEffect)
+            )
+            if (showBadge) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(6.dp)
+                        .background(badgeColor, CircleShape)
+                )
+            }
+        }
     }
 }
 
