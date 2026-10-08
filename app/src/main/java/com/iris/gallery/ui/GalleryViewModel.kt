@@ -143,6 +143,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             val updatedImages = (remainingImages + result.movedMedia).sortedWith(
                 compareByDescending<MediaImage> { it.dateTaken }
                     .thenByDescending { it.dateModified }
+                    .thenByDescending { it.dateAdded }
                     .thenByDescending { it.id }
             )
             _uiState.value = _uiState.value.copy(images = updatedImages)
@@ -158,6 +159,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             val updatedImages = (currentImages + result.movedMedia).distinctBy { it.path }.sortedWith(
                 compareByDescending<MediaImage> { it.dateTaken }
                     .thenByDescending { it.dateModified }
+                    .thenByDescending { it.dateAdded }
                     .thenByDescending { it.id }
             )
             _uiState.value = _uiState.value.copy(images = updatedImages)
@@ -331,6 +333,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                             (loaded + currentPending).distinctBy { it.path }.sortedWith(
                                 compareByDescending<MediaImage> { it.dateTaken }
                                     .thenByDescending { it.dateModified }
+                                    .thenByDescending { it.dateAdded }
                                     .thenByDescending { it.id }
                             )
                         } else {

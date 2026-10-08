@@ -463,14 +463,38 @@ class MediaRepository(private val context: Context) {
                             }
                         }
 
-                        val takenTime = resolveDateTaken(
-                            cursorDateTaken = cursorDateTaken,
-                            cursorDateModified = effectiveModified,
-                            cursorDateAdded = cursorDateAdded,
-                            diskLastModified = diskModifiedMs,
-                            existingDateTaken = existing?.dateTaken ?: 0L,
-                            existingDateModified = existing?.dateModified ?: 0L
-                        )
+                        var takenTime = cursorDateTaken
+                        val takenSec = cursorDateTaken / 1000L
+                        val addedSec = cursorDateAdded / 1000L
+                        val modSec = effectiveModified / 1000L
+                        val existingTakenSec = (existing?.dateTaken ?: 0L) / 1000L
+                        val existingModSec = (existing?.dateModified ?: 0L) / 1000L
+
+                        val isSyntheticDateTaken = (takenSec == addedSec && addedSec > 0L) ||
+                                (takenSec == modSec && modSec > 0L) ||
+                                (existingTakenSec > 0L && existingTakenSec == existingModSec && effectiveModified != (existing?.dateModified ?: 0L))
+
+                        if (!isVid && (cursorDateTaken <= 0L || isSyntheticDateTaken)) {
+                            if (existing != null && existing.dateTaken > 0L && existing.dateTaken != existing.dateModified && existing.dateTaken != existing.dateAdded) {
+                                takenTime = existing.dateTaken
+                            } else {
+                                val exifTaken = extractExifDateTaken(context, mediaUri, filePath)
+                                if (exifTaken != null && exifTaken > 0L) {
+                                    takenTime = exifTaken
+                                }
+                            }
+                        }
+
+                        if (takenTime <= 0L || (isSyntheticDateTaken && takenTime == cursorDateTaken)) {
+                            takenTime = resolveDateTaken(
+                                cursorDateTaken = cursorDateTaken,
+                                cursorDateModified = effectiveModified,
+                                cursorDateAdded = cursorDateAdded,
+                                diskLastModified = diskModifiedMs,
+                                existingDateTaken = existing?.dateTaken ?: 0L,
+                                existingDateModified = existing?.dateModified ?: 0L
+                            )
+                        }
 
                         if (!trashed && existing != null &&
                             existing.name == displayName &&
@@ -522,6 +546,7 @@ class MediaRepository(private val context: Context) {
         val sorted = result.distinctBy { it.id }.sortedWith(
             compareByDescending<MediaImage> { it.dateTaken }
                 .thenByDescending { it.dateModified }
+                .thenByDescending { it.dateAdded }
                 .thenByDescending { it.id }
         )
         if (!trashed) {

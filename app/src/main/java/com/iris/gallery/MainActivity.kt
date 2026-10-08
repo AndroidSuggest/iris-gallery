@@ -1994,8 +1994,8 @@ private fun GalleryScaffold(
         selectedAlbum?.let { album ->
             val filtered = filterMediaList(album.images, fileSearchQuery)
             when (effectiveAlbumMediaSort) {
-                MediaSort.DATE_DESC -> filtered.sortedWith(compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.dateModified }.thenByDescending { it.id })
-                MediaSort.DATE_ASC -> filtered.sortedWith(compareBy<MediaImage> { it.dateTaken }.thenBy { it.dateModified }.thenBy { it.id })
+                MediaSort.DATE_DESC -> filtered.sortedWith(compareByDescending<MediaImage> { it.dateTaken }.thenByDescending { it.dateModified }.thenByDescending { it.dateAdded }.thenByDescending { it.id })
+                MediaSort.DATE_ASC -> filtered.sortedWith(compareBy<MediaImage> { it.dateTaken }.thenBy { it.dateModified }.thenBy { it.dateAdded }.thenBy { it.id })
                 MediaSort.NAME_ASC -> filtered.sortedWith { a, b -> NaturalOrderComparator.compare(a.name, b.name) }
                 MediaSort.NAME_DESC -> filtered.sortedWith { a, b -> NaturalOrderComparator.compare(b.name, a.name) }
                 MediaSort.SIZE_DESC -> filtered.sortedWith(compareByDescending<MediaImage> { it.sizeBytes }.thenByDescending { it.id })
@@ -3933,9 +3933,9 @@ private fun DuplicateReviewScreen(
 }
 
 private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
-    bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
-    bytes >= 1_024 -> "%.0f KB".format(bytes / 1_024.0)
+    bytes >= 1_000_000_000 -> "%.1f GB".format(java.util.Locale.US, bytes / 1_000_000_000.0)
+    bytes >= 1_000_000 -> "%.1f MB".format(java.util.Locale.US, bytes / 1_000_000.0)
+    bytes >= 1_000 -> "%.0f KB".format(java.util.Locale.US, bytes / 1_000.0)
     else -> "$bytes B"
 }
 
@@ -3971,6 +3971,7 @@ private fun PhotoGrid(
     cellSize: androidx.compose.ui.unit.Dp,
     onCellSizeChange: ((androidx.compose.ui.unit.Dp) -> Unit)? = null,
     showTimeline: Boolean = false,
+    showDateBubble: Boolean = showTimeline,
     timelineDateFormat: TimelineDateFormat = TimelineDateFormat.SYSTEM_DEFAULT,
     customTimelineDateFormat: String = "d. MMMM yyyy",
     useRelativeDates: Boolean = true,
@@ -4146,6 +4147,7 @@ private fun PhotoGrid(
     var scrubberDragging by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
     var scrubTargetIndex by remember(timelineItems) { mutableIntStateOf(0) }
+    var scrubThumbIndex by remember(timelineItems) { mutableIntStateOf(0) }
     var suppressReleaseClickId by remember { mutableStateOf<Long?>(null) }
     val scrubberScope = rememberCoroutineScope()
 
@@ -4176,7 +4178,7 @@ private fun PhotoGrid(
     }
     val visibleDate by remember(timelineItems) { derivedStateOf {
         if (timelineItems.isEmpty()) return@derivedStateOf null
-        val visibleIndex = if (scrubberDragging) scrubTargetIndex else gridState.firstVisibleItemIndex
+        val visibleIndex = if (scrubberDragging) scrubThumbIndex else gridState.firstVisibleItemIndex
         val index = visibleIndex.coerceIn(0, timelineItems.lastIndex)
         var found: MediaImage? = null
         for (i in index..timelineItems.lastIndex) {
@@ -4458,6 +4460,13 @@ private fun PhotoGrid(
                                     val targetIndex = rowToItem[targetRow]
                                     val offset = remainder
                                     scrubTargetIndex = targetIndex
+
+                                    val thumbContentPx = (targetScrollPx + y.coerceIn(0f, size.height.toFloat())).toInt()
+                                    var thumbRow = rowOffsets.binarySearch(thumbContentPx)
+                                    if (thumbRow < 0) {
+                                        thumbRow = (-thumbRow - 2).coerceIn(0, totalRows - 1)
+                                    }
+                                    scrubThumbIndex = rowToItem[thumbRow]
                                     if (targetIndex != lastTargetIndex || kotlin.math.abs(offset - lastOffset) > 8) {
                                         lastTargetIndex = targetIndex
                                         lastOffset = offset
@@ -4524,7 +4533,7 @@ private fun PhotoGrid(
             }
 
             AnimatedVisibility(
-                visible = scrubberDragging && showTimeline && visibleDate != null,
+                visible = scrubberDragging && showDateBubble && visibleDate != null,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(end = 42.dp, bottom = bottomPadding)
@@ -6719,9 +6728,9 @@ private fun PhotoDetailsSheet(
 }
 
 private fun formatFileSize(bytes: Long): String = when {
-    bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
-    bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
-    bytes >= 1_024 -> "%.1f KB".format(bytes / 1_024.0)
+    bytes >= 1_000_000_000 -> "%.1f GB".format(java.util.Locale.US, bytes / 1_000_000_000.0)
+    bytes >= 1_000_000 -> "%.1f MB".format(java.util.Locale.US, bytes / 1_000_000.0)
+    bytes >= 1_000 -> "%.1f KB".format(java.util.Locale.US, bytes / 1_000.0)
     else -> "$bytes B"
 }
 

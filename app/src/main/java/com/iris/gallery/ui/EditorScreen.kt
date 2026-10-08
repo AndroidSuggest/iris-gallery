@@ -1286,7 +1286,7 @@ private fun ResizeDialog(
                 val targetBytes: Long? = if (selectedMode == 2) {
                     val num = targetSizeInput.toDoubleOrNull()
                     if (num != null && num > 0) {
-                        if (isMb) (num * 1024 * 1024).toLong() else (num * 1024).toLong()
+                        if (isMb) (num * 1_000_000).toLong() else (num * 1_000).toLong()
                     } else null
                 } else null
                 onApply(width, height, targetBytes)

@@ -510,6 +510,61 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
     }
 }
 
+fun parseExifDateTime(exif: androidx.exifinterface.media.ExifInterface): Long? {
+    val dateStr = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL))
+        ?: cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED))
+        ?: cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME))
+    if (dateStr.isNullOrBlank()) return null
+
+    val offset = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL))
+        ?: cleanExifString(exif.getAttribute("OffsetTime"))
+    val tz = if (!offset.isNullOrBlank()) {
+        val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
+        java.util.TimeZone.getTimeZone(prefix + offset)
+    } else {
+        java.util.TimeZone.getDefault()
+    }
+
+    val subsec = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_SUBSEC_TIME_ORIGINAL))
+        ?: cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_SUBSEC_TIME))
+    val subsecMs = subsec?.take(3)?.padEnd(3, '0')?.toLongOrNull() ?: 0L
+
+    val clean = dateStr.trim()
+    val pattern = if (clean.length >= 10 && clean[4] == '-' && clean[7] == '-') {
+        "yyyy-MM-dd HH:mm:ss"
+    } else {
+        "yyyy:MM:dd HH:mm:ss"
+    }
+    return runCatching {
+        val parser = java.text.SimpleDateFormat(pattern, java.util.Locale.US).apply {
+            timeZone = tz
+        }
+        val parsed = parser.parse(clean)?.time
+        if (parsed != null && parsed > 0L) {
+            parsed + subsecMs
+        } else null
+    }.getOrNull()
+}
+
+fun extractExifDateTaken(context: Context, uri: Uri, filePath: String): Long? {
+    if (filePath.isNotBlank()) {
+        val file = File(filePath)
+        if (file.exists() && file.canRead()) {
+            val res = runCatching {
+                val exif = androidx.exifinterface.media.ExifInterface(file)
+                parseExifDateTime(exif)
+            }.getOrNull()
+            if (res != null && res > 0L) return res
+        }
+    }
+    return runCatching {
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            val exif = androidx.exifinterface.media.ExifInterface(stream)
+            parseExifDateTime(exif)
+        }
+    }.getOrNull()
+}
+
 fun setExifAttributeUnicode(exif: androidx.exifinterface.media.ExifInterface, tag: String, value: String) {
     val applied = runCatching {
         val mAttributesField = androidx.exifinterface.media.ExifInterface::class.java.getDeclaredField("mAttributes").apply {
@@ -953,11 +1008,9 @@ fun resolveMediaUri(context: Context, uri: Uri): MediaImage {
             cr.openInputStream(uri)?.use { stream ->
                 val exif = androidx.exifinterface.media.ExifInterface(stream)
                 orientation = exif.rotationDegrees
-                val dateStr = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL)
-                    ?: exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME)
-                if (!dateStr.isNullOrBlank()) {
-                    val sdf = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
-                    sdf.parse(dateStr)?.time?.let { dateTaken = it }
+                val parsed = parseExifDateTime(exif)
+                if (parsed != null && parsed > 0L) {
+                    dateTaken = parsed
                 }
             }
         }
