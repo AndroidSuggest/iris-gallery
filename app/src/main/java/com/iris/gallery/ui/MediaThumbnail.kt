@@ -71,6 +71,14 @@ object ThumbnailCache {
 
     fun clear() {
         cache.evictAll()
+        hdrCache.evictAll()
+    }
+
+    private val hdrCache = LruCache<Long, Boolean>(2000)
+
+    fun isHdr(id: Long): Boolean? = hdrCache.get(id)
+    fun setHdr(id: Long, isHdr: Boolean) {
+        hdrCache.put(id, isHdr)
     }
 }
 
@@ -175,7 +183,40 @@ private fun loadThumbnail(context: Context, image: MediaImage, targetSizePx: Int
     }
     finalBitmap?.prepareToDraw()
     finalBitmap?.let { ThumbnailCache.put(cacheKey, it) }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !image.isVideo && !image.isRaw && !image.isGif) {
+        if (finalBitmap != null && finalBitmap.hasGainmap()) {
+            ThumbnailCache.setHdr(image.id, true)
+        }
+    }
     return finalBitmap
+}
+
+private fun checkIsUltraHdrFast(context: Context, image: MediaImage): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return false
+    if (image.isVideo || image.isRaw || image.isGif) return false
+    return runCatching {
+        val stream = if (image.path.isNotBlank() && java.io.File(image.path).canRead()) {
+            runCatching { java.io.FileInputStream(image.path) }.getOrNull()
+        } else null
+        val finalStream = stream ?: context.contentResolver.openInputStream(image.uri)
+        finalStream?.use { input ->
+            val buffer = ByteArray(131072)
+            var totalRead = 0
+            while (totalRead < buffer.size) {
+                val read = input.read(buffer, totalRead, buffer.size - totalRead)
+                if (read <= 0) break
+                totalRead += read
+            }
+            if (totalRead > 0) {
+                val str = String(buffer, 0, totalRead, Charsets.ISO_8859_1)
+                str.contains("http://ns.adobe.com/hdr-gain-map/1.0/") ||
+                str.contains("hdrgm:") ||
+                str.contains("Item:Semantic=\"GainMap\"") ||
+                str.contains("21496-1") ||
+                (str.contains("Container:Directory") && str.contains("GainMap"))
+            } else false
+        } ?: false
+    }.getOrDefault(false)
 }
 
 @Composable
@@ -191,11 +232,26 @@ fun MediaThumbnail(
     val cacheKey = remember(image.id, targetSizePx) { (image.id shl 16) xor (targetSizePx.toLong() and 0xFFFFL) }
     val cached = remember(cacheKey) { ThumbnailCache.get(cacheKey) }
     var bitmap by remember(cacheKey) { mutableStateOf(cached) }
+    val cachedHdr = remember(image.id) { ThumbnailCache.isHdr(image.id) ?: false }
+    var isHdr by remember(image.id) { mutableStateOf(cachedHdr) }
 
     if (bitmap == null) {
         LaunchedEffect(cacheKey, image.uri) {
             val loaded = withContext(Dispatchers.IO) { loadThumbnail(context, image, targetSizePx) }
             bitmap = loaded
+        }
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !image.isVideo && !image.isRaw && !image.isGif) {
+        val knownHdr = ThumbnailCache.isHdr(image.id)
+        if (knownHdr != null) {
+            if (isHdr != knownHdr) isHdr = knownHdr
+        } else {
+            LaunchedEffect(image.id) {
+                val detected = withContext(Dispatchers.IO) { checkIsUltraHdrFast(context, image) }
+                ThumbnailCache.setHdr(image.id, detected)
+                isHdr = detected
+            }
         }
     }
 
@@ -247,6 +303,7 @@ fun MediaThumbnail(
                 image.isGif -> "GIF"
                 image.isPanorama -> "PANO"
                 image.isMotionPhoto -> "MOTION"
+                isHdr || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && bitmap?.hasGainmap() == true) -> "HDR"
                 else -> null
             }
             if (badge != null) {

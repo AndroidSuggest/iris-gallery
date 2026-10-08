@@ -106,6 +106,7 @@ data class ExifMetadata(
     val latitude: Double? = null,
     val longitude: Double? = null,
     val altitude: Double? = null,
+    val isUltraHdr: Boolean = false,
 ) {
     val cameraDisplayName: String?
         get() = when {
@@ -474,6 +475,33 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
                 model
             }
 
+            val xmp = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_XMP))
+            var isUltraHdr = !xmp.isNullOrBlank() && (
+                xmp.contains("http://ns.adobe.com/hdr-gain-map/1.0/") ||
+                xmp.contains("hdrgm:") ||
+                xmp.contains("Item:Semantic=\"GainMap\"") ||
+                (xmp.contains("Container:Directory") && xmp.contains("GainMap"))
+            )
+            if (!isUltraHdr && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                runCatching {
+                    val sampleOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
+                    val testBmp = if (useDirectFile) {
+                        android.graphics.BitmapFactory.decodeFile(directFile!!.absolutePath, sampleOpts)
+                    } else {
+                        val inputUri = if (Build.VERSION.SDK_INT >= 29 && uri.scheme == android.content.ContentResolver.SCHEME_CONTENT) {
+                            runCatching { MediaStore.setRequireOriginal(uri) }.getOrDefault(uri)
+                        } else uri
+                        context.contentResolver.openInputStream(inputUri)?.use { stream ->
+                            android.graphics.BitmapFactory.decodeStream(stream, null, sampleOpts)
+                        }
+                    }
+                    if (testBmp?.hasGainmap() == true) {
+                        isUltraHdr = true
+                    }
+                    testBmp?.recycle()
+                }
+            }
+
             ExifMetadata(
                 title = documentName,
                 cameraModel = cleanModel,
@@ -504,6 +532,7 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
                 latitude = lat,
                 longitude = lng,
                 altitude = altitude,
+                isUltraHdr = isUltraHdr,
             )
     } catch (e: Exception) {
         ExifMetadata()

@@ -241,6 +241,8 @@
     <string name="details_image_unique_id">المعرف الفريد للصورة</string>
     <string name="details_exif_user_comment">تعليق EXIF للمستخدم</string>
     <string name="details_xp_comment">تعليق XP</string>
+    <string name="details_dynamic_range">المدى الديناميكي</string>
+    <string name="details_ultra_hdr">Ultra HDR</string>
     <string name="details_jpeg_comment">تعليق JPEG</string>
     <string name="details_jpeg_comment_numbered">تعليق JPEG %1$d</string>
 

@@ -303,9 +303,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
             return
         }
-        if (showLoading) {
-            repository.clearVerifiedPathsCache()
-        }
         refreshJob = viewModelScope.launch {
             try {
                 kotlinx.coroutines.withTimeout(15_000) {

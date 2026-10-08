@@ -267,6 +267,8 @@
     <string name="details_image_unique_id">Image Unique ID</string>
     <string name="details_exif_user_comment">EXIF User Comment</string>
     <string name="details_xp_comment">XP Comment</string>
+    <string name="details_dynamic_range">Dynamic range</string>
+    <string name="details_ultra_hdr">Ultra HDR</string>
     <string name="details_jpeg_comment">JPEG Comment</string>
     <string name="details_jpeg_comment_numbered">JPEG Comment %1$d</string>
 

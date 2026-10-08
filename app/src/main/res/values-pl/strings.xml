@@ -264,6 +264,8 @@
 <string name="details_image_unique_id">Unikalny identyfikator obrazu</string>
 <string name="details_exif_user_comment">Komentarz użytkownika EXIF</string>
 <string name="details_xp_comment">Komentarz XP</string>
+<string name="details_dynamic_range">Zakres dynamiczny</string>
+<string name="details_ultra_hdr">Ultra HDR</string>
 <string name="details_jpeg_comment">Komentarz JPEG</string>
 <string name="details_jpeg_comment_numbered">Komentarz JPEG %1$d</string>
 

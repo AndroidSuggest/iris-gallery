@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.ClipData
 import android.content.ContentUris
 import android.content.ContentValues
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -262,6 +263,7 @@ import coil3.compose.AsyncImagePainter
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Precision
+import coil3.BitmapImage
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -2590,6 +2592,11 @@ private fun GalleryScaffold(
                   }
                 }
               }
+              LaunchedEffect(loading) {
+                if (!loading) {
+                  pullRefreshState0.animateToHidden()
+                }
+              }
               PullToRefreshBox(
                 state = pullRefreshState0,
                 isRefreshing = loading,
@@ -2639,6 +2646,11 @@ private fun GalleryScaffold(
                     }
                     return Velocity.Zero
                   }
+                }
+              }
+              LaunchedEffect(loading) {
+                if (!loading) {
+                  pullRefreshState1.animateToHidden()
                 }
               }
               PullToRefreshBox(
@@ -4640,6 +4652,9 @@ private fun PhotoViewer(
         }
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                activity?.window?.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
+            }
             activity?.window?.let { win ->
                 val lp = win.attributes
                 if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
@@ -4655,6 +4670,9 @@ private fun PhotoViewer(
     }
     val handleClose = {
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            activity?.window?.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
+        }
         activity?.window?.let { win ->
             val lp = win.attributes
             if (lp.screenBrightness != WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) {
@@ -4720,6 +4738,42 @@ private fun PhotoViewer(
     val currentExif by produceState<ExifMetadata?>(initialValue = null, current.id, current.uri, current.dateTaken, current.description, current.title) {
         value = withContext(Dispatchers.IO) {
             loadExifMetadata(context, current.uri, current.path)
+        }
+    }
+    var currentPhotoHasGainmap by remember(current.id) { mutableStateOf(false) }
+    val currentIsVideoHdr by produceState(initialValue = false, current.id, current.isVideo) {
+        if (current.isVideo) {
+            value = withContext(Dispatchers.IO) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(context, current.uri)
+                    val transfer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER)?.toIntOrNull()
+                    } else null
+                    transfer == 6 || transfer == 7
+                } catch (_: Exception) {
+                    false
+                } finally {
+                    retriever.release()
+                }
+            }
+        } else {
+            value = false
+        }
+    }
+    val isCurrentHdr = if (current.isVideo) {
+        currentIsVideoHdr
+    } else {
+        currentPhotoHasGainmap || (currentExif?.isUltraHdr == true) || (com.iris.gallery.ui.ThumbnailCache.isHdr(current.id) == true)
+    }
+
+    LaunchedEffect(isCurrentHdr, activity) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            activity?.window?.colorMode = if (isCurrentHdr) {
+                ActivityInfo.COLOR_MODE_HDR
+            } else {
+                ActivityInfo.COLOR_MODE_DEFAULT
+            }
         }
     }
     val viewerComment = remember(current.id, currentExif) {
@@ -4897,6 +4951,11 @@ private fun PhotoViewer(
                     },
                     onRotateGestureTriggered = {
                         if (!dismissedRotateTip) showRotateTipBanner = true
+                    },
+                    onGainmapDetected = { hasGainmap ->
+                        if (hasGainmap && page == pagerState.currentPage) {
+                            currentPhotoHasGainmap = true
+                        }
                     },
                     onZoomChanged = { zoomed ->
                         zoomedImageId = if (zoomed) media.id else null
@@ -5943,6 +6002,7 @@ private fun ZoomablePhoto(
     onDismissDrag: (Float) -> Unit = {},
     onDismissRelease: (Float) -> Unit = {},
     onRotateGestureTriggered: () -> Unit = {},
+    onGainmapDetected: (Boolean) -> Unit = {},
     onZoomChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
@@ -5983,6 +6043,16 @@ private fun ZoomablePhoto(
     val painter = rememberAsyncImagePainter(model = imageRequest)
     val painterState by painter.state.collectAsState()
     val fullImageLoaded = painterState is AsyncImagePainter.State.Success
+
+    LaunchedEffect(painterState) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val success = painterState as? AsyncImagePainter.State.Success
+            val bmp = (success?.result?.image as? BitmapImage)?.bitmap
+            if (bmp != null && !bmp.isRecycled && bmp.hasGainmap()) {
+                onGainmapDetected(true)
+            }
+        }
+    }
 
     fun clampOffset(candidate: Offset, atScale: Float): Offset {
         if (atScale <= 1f || containerSize == IntSize.Zero || candidate.x.isNaN() || candidate.y.isNaN()) return Offset.Zero
@@ -6287,6 +6357,30 @@ private fun PhotoDetailsSheet(
         }
     }
     val currentExif = exif
+    val videoHdrTransfer by produceState<String?>(initialValue = null, image.id, image.isVideo) {
+        if (image.isVideo) {
+            value = withContext(Dispatchers.IO) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(context, image.uri)
+                    val transfer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER)?.toIntOrNull()
+                    } else null
+                    when (transfer) {
+                        6 -> "HDR (HDR10)"
+                        7 -> "HDR (HLG)"
+                        else -> null
+                    }
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    retriever.release()
+                }
+            }
+        } else {
+            value = null
+        }
+    }
     var editing by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
@@ -6594,6 +6688,11 @@ private fun PhotoDetailsSheet(
                     }
                     if (image.orientation != 0) DetailItem(stringResource(R.string.details_orientation), "${image.orientation}°")
                     if (isVideo && image.durationMs > 0) DetailItem(stringResource(R.string.details_duration), formatMediaDuration(image.durationMs))
+                    if (!isVideo && (currentExif?.isUltraHdr == true || com.iris.gallery.ui.ThumbnailCache.isHdr(image.id) == true)) {
+                        DetailItem(stringResource(R.string.details_dynamic_range), stringResource(R.string.details_ultra_hdr))
+                    } else if (isVideo && videoHdrTransfer != null) {
+                        DetailItem(stringResource(R.string.details_dynamic_range), videoHdrTransfer!!)
+                    }
                 }
             }
 
