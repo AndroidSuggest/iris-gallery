@@ -157,6 +157,14 @@ class TrashRepository(private val context: Context) {
                 context.contentResolver.delete(table, "${MediaStore.MediaColumns._ID}=?", arrayOf(item.id.toString())) > 0
             }.getOrDefault(false)
             deleted = deleted || idDeleted
+            runCatching {
+                context.contentResolver.delete(MediaStore.Files.getContentUri("external"), "${MediaStore.MediaColumns._ID}=?", arrayOf(item.id.toString()))
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                runCatching {
+                    context.contentResolver.delete(MediaStore.Files.getContentUri("external_primary"), "${MediaStore.MediaColumns._ID}=?", arrayOf(item.id.toString()))
+                }
+            }
         }
 
         if (item.uri != mediaStoreUri) {
@@ -174,6 +182,11 @@ class TrashRepository(private val context: Context) {
             deleted = deleted || pathDeleted
             runCatching {
                 context.contentResolver.delete(MediaStore.Files.getContentUri("external"), "${MediaStore.MediaColumns.DATA}=?", arrayOf(item.path))
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                runCatching {
+                    context.contentResolver.delete(MediaStore.Files.getContentUri("external_primary"), "${MediaStore.MediaColumns.DATA}=?", arrayOf(item.path))
+                }
             }
             MediaScannerConnection.scanFile(context, arrayOf(item.path), null, null)
         }
