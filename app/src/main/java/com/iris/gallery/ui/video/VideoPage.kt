@@ -122,6 +122,8 @@ fun VideoPage(
     autoPlay: Boolean = true,
     loop: Boolean = true,
     doubleTapToZoom: Boolean = false,
+    doubleTapZoomLevel: Float = 2.5f,
+    multiStageZoom: Boolean = true,
     gestureControls: Boolean = true,
     onTap: () -> Unit,
     onSwipeUp: () -> Unit = {},
@@ -309,7 +311,7 @@ fun VideoPage(
 
     Box(
         Modifier.fillMaxSize().background(Color.Black).onSizeChanged { size = it }
-            .pointerInput(media.id, active) {
+            .pointerInput(media.id, active, doubleTapToZoom, doubleTapZoomLevel, multiStageZoom) {
                 detectTapGestures(
                     onTap = {
                         if (SystemClock.uptimeMillis() >= suppressTapUntil) onTap()
@@ -332,21 +334,64 @@ fun VideoPage(
                             }
                             else -> {
                                 if (doubleTapToZoom) {
-                                    if (scale > 1.05f) {
-                                        scale = 1f
-                                        offset = Offset.Zero
-                                        onZoomChanged(false)
+                                    if (!multiStageZoom) {
+                                        if (scale > 1.05f) {
+                                            scale = 1f
+                                            offset = Offset.Zero
+                                            onZoomChanged(false)
+                                        } else {
+                                            val targetZoom = doubleTapZoomLevel
+                                            scale = targetZoom
+                                            offset = clamp(Offset.Zero, targetZoom)
+                                            onZoomChanged(true)
+                                        }
                                     } else {
+                                        // Multi-stage zoom: cycle through Fit(1f) -> Fill -> 1:1 -> Fit
                                         val containerAspect = size.width.toFloat() / size.height.coerceAtLeast(1)
                                         val fillScale = if (displayAspect > containerAspect) {
                                             (size.height.toFloat() * displayAspect) / size.width.toFloat()
                                         } else {
                                             (size.width.toFloat() / displayAspect) / size.height.toFloat()
+                                        }.coerceIn(1f, 5f)
+                                        // "1:1" stage: scale so source pixels match display pixels.
+                                        val displayedWidth = if (displayAspect > containerAspect) {
+                                            size.width.toFloat()
+                                        } else {
+                                            size.height.toFloat() * displayAspect
                                         }
-                                        val targetZoom = if (fillScale in 1.15f..4.0f) fillScale else 2.5f
-                                        scale = targetZoom
-                                        offset = clamp(Offset.Zero, targetZoom)
-                                        onZoomChanged(true)
+                                        val quarterTurn = ((media.orientation % 360) + 360) % 360 in setOf(90, 270)
+                                        val sourceWidth = (if (quarterTurn) media.height else media.width).coerceAtLeast(1).toFloat()
+                                        val originalScale = (sourceWidth / displayedWidth).coerceIn(1f, 5f)
+                                        val candidateStages = listOf(fillScale, originalScale, doubleTapZoomLevel)
+                                            .filter { it > 1.15f }
+                                            .sorted()
+                                        val distinctStages = mutableListOf<Float>()
+                                        for (stage in candidateStages) {
+                                            if (distinctStages.none { kotlin.math.abs(it - stage) < 0.2f }) {
+                                                distinctStages.add(stage)
+                                            }
+                                        }
+                                        if (distinctStages.isEmpty()) {
+                                            distinctStages.add(doubleTapZoomLevel.coerceIn(1.5f, 4f))
+                                        }
+                                        val stages = listOf(1f) + distinctStages
+                                        val referenceScale = scale
+                                        val nextScale = stages.firstOrNull { it > referenceScale + 0.15f } ?: 1f
+                                        if (nextScale <= 1.05f) {
+                                            scale = 1f
+                                            offset = Offset.Zero
+                                            onZoomChanged(false)
+                                        } else {
+                                            val center = Offset(size.width / 2f, size.height / 2f)
+                                            val z = nextScale / scale
+                                            val targetOffset = clamp(
+                                                offset + (position - center - offset) * (1f - z),
+                                                nextScale
+                                            )
+                                            scale = nextScale
+                                            offset = targetOffset
+                                            onZoomChanged(true)
+                                        }
                                     }
                                 } else {
                                     val nextPlaying = !engine.player.isPlaying
@@ -385,11 +430,14 @@ fun VideoPage(
             }
             .pointerInput(media.id, gestureControls, active) {
                 if (!active) return@pointerInput
+                val touchSlop = viewConfiguration.touchSlop
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val startX = down.position.x
                     var totalDragY = 0f
                     var totalDragX = 0f
+                    var singleFingerPanDistance = 0f
+                    var panStarted = false
                     var gestureType = 0 // 0 = UNLOCKED, 1 = BRIGHTNESS, 2 = VOLUME, 3 = SWIPE_UP, 4 = DISMISS, -1 = HORIZONTAL, -2 = DEADZONE, -3 = 2X_ACTIVE
                     var dragStartBrightness = 0.5f
                     var dragStartVolume = 0
@@ -399,7 +447,14 @@ fun VideoPage(
                     do {
                         val event = awaitPointerEvent()
                         val pointers = event.changes.count { it.pressed }
-                        if (pointers >= 2 || (pointers == 1 && scale > 1f)) {
+                        if (pointers == 1 && scale > 1f && !panStarted) {
+                            val panChange = event.calculatePan()
+                            singleFingerPanDistance += panChange.getDistance()
+                            if (singleFingerPanDistance >= touchSlop) {
+                                panStarted = true
+                            }
+                        }
+                        if (pointers >= 2 || (pointers == 1 && scale > 1f && panStarted)) {
                             if (gestureType == 4) {
                                 gestureType = 0
                                 onDismissRelease(0f)
@@ -884,4 +939,3 @@ private fun VideoGestureHud(
         }
     }
 }
-

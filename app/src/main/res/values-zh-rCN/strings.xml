@@ -172,6 +172,11 @@
     <string name="filter_panoramas_count">全景 (%1$d)</string>
     <string name="filter_motion_count">动态照片 (%1$d)</string>
 
+    <!-- Depth Photo -->
+    <string name="depth_photo_title">景深</string>
+    <string name="depth_focus">对焦距离</string>
+    <string name="depth_blur_strength">虚化强度</string>
+
     <!-- Duplicates Review Screen -->
     <string name="duplicates_title">重复与相似照片</string>
     <string name="duplicates_desc">扫描完全相同的副本和视觉相似的照片</string>

@@ -114,6 +114,7 @@ data class ExifMetadata(
     val longitude: Double? = null,
     val altitude: Double? = null,
     val isUltraHdr: Boolean = false,
+    val isDepthPhoto: Boolean = false,
 ) {
     val cameraDisplayName: String?
         get() = when {
@@ -191,6 +192,20 @@ fun cleanUserComment(raw: String?): String? {
     val oemJunk = setOf("auto", "normal", "default", "none", "null", "undefined", "exif_jpeg_420", "qualcomm", "samsung", "camera_0", "hdr_auto", "sef", "hdr", "standard")
     if (lower in oemJunk || lower.startsWith("samsung:hdr") || lower.startsWith("hdr:") || lower.startsWith("scene:")) {
         return null
+    }
+
+    // Filter out OEM camera firmware internal JSON dumps (e.g. Nokia HMD Global writes
+    // {"capture_mode":"faceshow","faces":["678_-1539_1292_-925"]} into UserComment).
+    val trimmedText = text.trim()
+    if ((trimmedText.startsWith("{") && trimmedText.endsWith("}")) ||
+        (trimmedText.startsWith("[") && trimmedText.endsWith("]"))) {
+        val keys = listOf("\"capture_mode\"", "\"faces\"", "\"debug\"", "\"metadata\"",
+                          "\"camera\"", "\"sensor\"", "\"ae\"", "\"awb\"", "\"af\"",
+                          "\"exif\"", "\"jpeg\"", "\"orientation\"", "\"iso\"",
+                          "\"scene_mode\"", "\"vendor\"")
+        if (keys.any { trimmedText.contains(it, ignoreCase = true) }) {
+            return null
+        }
     }
 
     val printable = text.count { !it.isISOControl() || it in "\n\r\t" }
@@ -483,6 +498,8 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
             }
 
             val xmp = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_XMP))
+            val isDepthPhoto = !xmp.isNullOrBlank() &&
+                (xmp.contains("GDepth:") || xmp.contains("GCamera:SpecialTypeID=\"PORTRAIT_TYPE\""))
             var isUltraHdr = !xmp.isNullOrBlank() && (
                 xmp.contains("http://ns.adobe.com/hdr-gain-map/1.0/") ||
                 xmp.contains("hdrgm:") ||
@@ -540,6 +557,7 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
                 longitude = lng,
                 altitude = altitude,
                 isUltraHdr = isUltraHdr,
+                isDepthPhoto = isDepthPhoto,
             )
     } catch (e: Exception) {
         ExifMetadata()
@@ -1111,6 +1129,3 @@ fun resolveMediaUri(context: Context, uri: Uri): MediaImage {
         dateAdded = dateTaken,
     )
 }
-
-
-
