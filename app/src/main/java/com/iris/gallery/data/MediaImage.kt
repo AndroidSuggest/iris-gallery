@@ -58,11 +58,42 @@ val MediaImage.isGif: Boolean
 val MediaImage.isMotionPhoto: Boolean
     get() {
         if (isVideo || isScreenshot) return false
-        return name.startsWith("MVIMG_", ignoreCase = true) ||
-                name.contains("_MP.jpg", ignoreCase = true) ||
-                name.contains("_MP.heic", ignoreCase = true) ||
-                name.contains("_MOTION.", ignoreCase = true) ||
-                name.startsWith("MP_", ignoreCase = true)
+        // Apple Live Photo exported as .livp (zip containing JPG + MOV)
+        if (name.endsWith(".livp", ignoreCase = true) ||
+            path.endsWith(".livp", ignoreCase = true)) return true
+        // Google / Samsung motion photo filename hints
+        if (name.startsWith("MVIMG_", ignoreCase = true) ||
+            name.contains("_MP.jpg", ignoreCase = true) ||
+            name.contains("_MP.heic", ignoreCase = true) ||
+            name.contains("_MOTION.", ignoreCase = true) ||
+            name.startsWith("MP_", ignoreCase = true)) return true
+        // Apple Live Photo: paired .MOV/.mov file beside this image
+        if (path.isNotBlank()) {
+            val stem = path.substringBeforeLast('.', "")
+            if (stem.isNotBlank()) {
+                val movFile = java.io.File("$stem.MOV")
+                val movFile2 = java.io.File("$stem.mov")
+                if ((movFile.exists() && movFile.canRead()) ||
+                    (movFile2.exists() && movFile2.canRead())) return true
+            }
+        }
+        return false
+    }
+
+/**
+ * Apple Live Photo exported as .livp (a renamed .zip containing IMG.JPG + IMG.MOV).
+ * Extracts the inner JPEG to a temp cache file so Coil can display it.
+ */
+val MediaImage.livpJpegCacheFile: java.io.File?
+    get() {
+        if (!name.endsWith(".livp", ignoreCase = true) &&
+            !path.endsWith(".livp", ignoreCase = true)) return null
+        if (path.isBlank()) return null
+        val src = java.io.File(path)
+        if (!src.exists() || !src.canRead()) return null
+        // Stable temp path derived from the source file path + last-modified stamp
+        val key = src.absolutePath.hashCode().toString() + "_" + src.lastModified()
+        return java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "livp_$key.jpg")
     }
 
 val MediaImage.isPanorama: Boolean
@@ -114,6 +145,7 @@ data class ExifMetadata(
     val longitude: Double? = null,
     val altitude: Double? = null,
     val isUltraHdr: Boolean = false,
+    val isDepthPhoto: Boolean = false,
 ) {
     val cameraDisplayName: String?
         get() = when {
@@ -191,6 +223,20 @@ fun cleanUserComment(raw: String?): String? {
     val oemJunk = setOf("auto", "normal", "default", "none", "null", "undefined", "exif_jpeg_420", "qualcomm", "samsung", "camera_0", "hdr_auto", "sef", "hdr", "standard")
     if (lower in oemJunk || lower.startsWith("samsung:hdr") || lower.startsWith("hdr:") || lower.startsWith("scene:")) {
         return null
+    }
+
+    // Filter out OEM camera firmware internal JSON dumps (e.g. Nokia HMD Global writes
+    // {"capture_mode":"faceshow","faces":["678_-1539_1292_-925"]} into UserComment).
+    val trimmedText = text.trim()
+    if ((trimmedText.startsWith("{") && trimmedText.endsWith("}")) ||
+        (trimmedText.startsWith("[") && trimmedText.endsWith("]"))) {
+        val keys = listOf("\"capture_mode\"", "\"faces\"", "\"debug\"", "\"metadata\"",
+                          "\"camera\"", "\"sensor\"", "\"ae\"", "\"awb\"", "\"af\"",
+                          "\"exif\"", "\"jpeg\"", "\"orientation\"", "\"iso\"",
+                          "\"scene_mode\"", "\"vendor\"")
+        if (keys.any { trimmedText.contains(it, ignoreCase = true) }) {
+            return null
+        }
     }
 
     val printable = text.count { !it.isISOControl() || it in "\n\r\t" }
@@ -483,6 +529,8 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
             }
 
             val xmp = cleanExifString(exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_XMP))
+            val isDepthPhoto = !xmp.isNullOrBlank() &&
+                (xmp.contains("GDepth:") || xmp.contains("GCamera:SpecialTypeID=\"PORTRAIT_TYPE\""))
             var isUltraHdr = !xmp.isNullOrBlank() && (
                 xmp.contains("http://ns.adobe.com/hdr-gain-map/1.0/") ||
                 xmp.contains("hdrgm:") ||
@@ -540,6 +588,7 @@ fun loadExifMetadata(context: android.content.Context, uri: Uri, path: String? =
                 longitude = lng,
                 altitude = altitude,
                 isUltraHdr = isUltraHdr,
+                isDepthPhoto = isDepthPhoto,
             )
     } catch (e: Exception) {
         ExifMetadata()
@@ -1111,6 +1160,3 @@ fun resolveMediaUri(context: Context, uri: Uri): MediaImage {
         dateAdded = dateTaken,
     )
 }
-
-
-

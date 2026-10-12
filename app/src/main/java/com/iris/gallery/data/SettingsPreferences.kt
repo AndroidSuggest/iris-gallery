@@ -155,7 +155,7 @@ data class SettingsState(
     val pinchToRotate: Boolean = true,
     val dismissedRotateTip: Boolean = false,
     val doubleTapZoomLevel: Float = 2.5f,
-    val multiStageZoom: Boolean = false,
+    val multiStageZoom: Boolean = true,
     val photosOnly: Boolean = false,
     val startupTab: StartupTab = StartupTab.PHOTOS,
     val showPhotosTab: Boolean = true,
@@ -341,7 +341,7 @@ class SettingsPreferences(context: Context) {
             pinchToRotate = prefs.getBoolean("pinch_to_rotate", true),
             dismissedRotateTip = prefs.getBoolean("dismissed_rotate_tip", false),
             doubleTapZoomLevel = prefs.getFloat("double_tap_zoom_level", 2.5f),
-            multiStageZoom = prefs.getBoolean("multi_stage_zoom", false),
+            multiStageZoom = prefs.getBoolean("multi_stage_zoom_v2", true),
             photosOnly = prefs.getBoolean("photos_only", false),
             startupTab = runCatching { StartupTab.valueOf(startupStr.orEmpty()) }.getOrDefault(StartupTab.PHOTOS),
             showPhotosTab = prefs.getBoolean("show_photos_tab", true),
@@ -402,7 +402,7 @@ class SettingsPreferences(context: Context) {
             .putBoolean("pinch_to_rotate", state.pinchToRotate)
             .putBoolean("dismissed_rotate_tip", state.dismissedRotateTip)
             .putFloat("double_tap_zoom_level", state.doubleTapZoomLevel)
-            .putBoolean("multi_stage_zoom", state.multiStageZoom)
+            .putBoolean("multi_stage_zoom_v2", state.multiStageZoom)
             .putBoolean("photos_only", state.photosOnly)
             .putString("startup_tab", state.startupTab.name)
             .putBoolean("show_photos_tab", state.showPhotosTab)

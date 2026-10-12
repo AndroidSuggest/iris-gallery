@@ -43,6 +43,7 @@ import com.iris.gallery.data.isMotionPhoto
 import com.iris.gallery.data.isPanorama
 import com.iris.gallery.data.isRaw
 import com.iris.gallery.data.isSvg
+import com.iris.gallery.data.livpJpegCacheFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -75,6 +76,7 @@ object ThumbnailCache {
     fun clear() {
         cache.evictAll()
         hdrCache.evictAll()
+        depthCache.evictAll()
     }
 
     private val hdrCache = LruCache<Long, Boolean>(2000)
@@ -82,6 +84,13 @@ object ThumbnailCache {
     fun isHdr(id: Long): Boolean? = hdrCache.get(id)
     fun setHdr(id: Long, isHdr: Boolean) {
         hdrCache.put(id, isHdr)
+    }
+
+    private val depthCache = LruCache<Long, Boolean>(2000)
+
+    fun isDepth(id: Long): Boolean? = depthCache.get(id)
+    fun setDepth(id: Long, isDepth: Boolean) {
+        depthCache.put(id, isDepth)
     }
 }
 
@@ -109,11 +118,27 @@ fun getThumbnailTargetSizePx(cellSizeDp: Float, density: Float = 2.5f): Int {
 private fun loadThumbnail(context: Context, image: MediaImage, targetSizePx: Int = 320): Bitmap? {
     val cacheKey = (image.id shl 16) xor (targetSizePx.toLong() and 0xFFFFL)
     ThumbnailCache.get(cacheKey)?.let { return it }
+
+    // For .livp (Apple Live Photo zip) files, make sure the inner JPEG has been
+    // extracted to a temp cache file before attempting thumbnail creation.
+    if (image.path.endsWith(".livp", ignoreCase = true)) {
+        val cached = image.livpJpegCacheFile
+        if (cached != null && (!cached.exists() || cached.length() == 0L)) {
+            // Trigger motion extraction which also writes the JPEG cache file.
+            runCatching { com.iris.gallery.decoder.MotionPhotoExtractor.detectMotionPhoto(context, image) }
+        }
+    }
+
     val bitmap = try {
         val size = Size(targetSizePx, targetSizePx)
+        // For .livp files, use the extracted cache JPEG if available.
+        val effectivePath = if (image.path.endsWith(".livp", ignoreCase = true)) {
+            val cached = image.livpJpegCacheFile
+            if (cached != null && cached.exists() && cached.length() > 0) cached.absolutePath else image.path
+        } else image.path
         val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
         if (isFile) {
-            val file = java.io.File(image.path)
+            val file = java.io.File(effectivePath)
             if (Build.VERSION.SDK_INT >= 29) {
                 if (image.isVideo) {
                     android.media.ThumbnailUtils.createVideoThumbnail(file, size, null)
@@ -291,6 +316,30 @@ private fun checkIsUltraHdrFast(context: Context, image: MediaImage): Boolean {
     }.getOrDefault(false)
 }
 
+private fun checkIsDepthPhotoFast(context: Context, image: MediaImage): Boolean {
+    if (image.isVideo || image.isRaw || image.isGif || image.isSvg) return false
+    return runCatching {
+        val stream = if (image.path.isNotBlank() && java.io.File(image.path).canRead()) {
+            runCatching { java.io.FileInputStream(image.path) }.getOrNull()
+        } else null
+        val finalStream = stream ?: context.contentResolver.openInputStream(image.uri)
+        finalStream?.use { input ->
+            val buffer = ByteArray(131072)
+            var totalRead = 0
+            while (totalRead < buffer.size) {
+                val read = input.read(buffer, totalRead, buffer.size - totalRead)
+                if (read <= 0) break
+                totalRead += read
+            }
+            if (totalRead > 0) {
+                val str = String(buffer, 0, totalRead, Charsets.ISO_8859_1)
+                str.contains("GDepth:") ||
+                str.contains("GCamera:SpecialTypeID=\"PORTRAIT_TYPE\"")
+            } else false
+        } ?: false
+    }.getOrDefault(false)
+}
+
 @Composable
 fun MediaThumbnail(
     image: MediaImage,
@@ -307,6 +356,8 @@ fun MediaThumbnail(
     var bitmap by remember(cacheKey) { mutableStateOf(cached) }
     val cachedHdr = remember(image.id) { ThumbnailCache.isHdr(image.id) ?: false }
     var isHdr by remember(image.id) { mutableStateOf(cachedHdr) }
+    val cachedDepth = remember(image.id) { ThumbnailCache.isDepth(image.id) ?: false }
+    var isDepth by remember(image.id) { mutableStateOf(cachedDepth) }
 
     if (bitmap == null) {
         LaunchedEffect(cacheKey, image.uri) {
@@ -354,6 +405,19 @@ fun MediaThumbnail(
                 val detected = withContext(Dispatchers.IO) { checkIsUltraHdrFast(context, image) }
                 ThumbnailCache.setHdr(image.id, detected)
                 isHdr = detected
+            }
+        }
+    }
+
+    if (!image.isVideo && !image.isRaw && !image.isGif && !image.isSvg && !image.isMotionPhoto) {
+        val knownDepth = ThumbnailCache.isDepth(image.id)
+        if (knownDepth != null) {
+            if (isDepth != knownDepth) isDepth = knownDepth
+        } else {
+            LaunchedEffect(image.id) {
+                val detected = withContext(Dispatchers.IO) { checkIsDepthPhotoFast(context, image) }
+                ThumbnailCache.setDepth(image.id, detected)
+                isDepth = detected
             }
         }
     }
@@ -407,6 +471,7 @@ fun MediaThumbnail(
                 image.isSvg -> "SVG"
                 image.isPanorama -> "PANO"
                 image.isMotionPhoto -> "MOTION"
+                isDepth -> "DEPTH"
                 isHdr || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && bitmap?.hasGainmap() == true) -> "HDR"
                 else -> null
             }

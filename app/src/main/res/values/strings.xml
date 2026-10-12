@@ -179,6 +179,16 @@
     <string name="filter_panoramas_count">Panoramas (%1$d)</string>
     <string name="filter_motion_count">Motion Photos (%1$d)</string>
 
+    <!-- Motion Photo playback -->
+    <string name="motion_play">Play motion photo</string>
+    <string name="motion_extracting">Extracting motion video…</string>
+    <string name="motion_extract_failed">Could not extract motion video</string>
+
+    <!-- Depth Photo -->
+    <string name="depth_photo_title">Depth</string>
+    <string name="depth_focus">Focus distance</string>
+    <string name="depth_blur_strength">Blur strength</string>
+
     <!-- Duplicates Review Screen -->
     <string name="duplicates_title">Duplicates &amp; Similar Photos</string>
     <string name="duplicates_desc">Scan for exact copies and visually similar shots</string>

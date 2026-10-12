@@ -126,6 +126,8 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.BlurOn
+import androidx.compose.material.icons.outlined.BlurOff
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.SelectAll
@@ -153,6 +155,7 @@ import com.iris.gallery.data.isGif
 import com.iris.gallery.data.isRaw
 import com.iris.gallery.data.isMotionPhoto
 import com.iris.gallery.data.isPanorama
+import com.iris.gallery.data.livpJpegCacheFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -192,6 +195,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -296,6 +300,14 @@ import com.iris.gallery.ui.WallpaperChoiceBottomSheet
 import com.iris.gallery.ui.AppLockScreen
 import com.iris.gallery.ui.video.VideoPage
 import com.iris.gallery.ui.video.Media3VideoEngine
+import com.iris.gallery.decoder.MotionPhotoExtractor
+import com.iris.gallery.decoder.MotionVideo
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+
 import com.iris.gallery.data.DuplicateGroup
 import com.iris.gallery.data.SettingsPreferences
 import com.iris.gallery.data.SettingsState
@@ -450,6 +462,12 @@ class MainActivity : ComponentActivity() {
 }
 
 private fun requiredPermissions(): Array<String> = when {
+    Build.VERSION.SDK_INT >= 34 -> arrayOf(
+        Manifest.permission.READ_MEDIA_IMAGES,
+        Manifest.permission.READ_MEDIA_VIDEO,
+        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+        Manifest.permission.ACCESS_MEDIA_LOCATION,
+    )
     Build.VERSION.SDK_INT >= 33 -> arrayOf(
         Manifest.permission.READ_MEDIA_IMAGES,
         Manifest.permission.READ_MEDIA_VIDEO,
@@ -463,6 +481,19 @@ private fun requiredPermissions(): Array<String> = when {
         Manifest.permission.READ_EXTERNAL_STORAGE,
         Manifest.permission.WRITE_EXTERNAL_STORAGE,
     )
+}
+
+private fun hasMediaPermission(context: android.content.Context): Boolean {
+    fun granted(p: String) = ContextCompat.checkSelfPermission(context, p) == PermissionChecker.PERMISSION_GRANTED
+    return when {
+        Build.VERSION.SDK_INT >= 34 -> {
+            // On Android 14+, user may choose "Select photos" which grants
+            // READ_MEDIA_VISUAL_USER_SELECTED without the full media permissions.
+            (granted(Manifest.permission.READ_MEDIA_IMAGES) && granted(Manifest.permission.READ_MEDIA_VIDEO)) ||
+            granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+        }
+        else -> requiredPermissions().all { granted(it) }
+    }
 }
 
 private enum class MediaFormatFilter(val label: String) {
@@ -497,12 +528,10 @@ private fun GalleryApp(
     val context = LocalContext.current
     val permissions = remember { requiredPermissions() }
     var permitted by remember {
-        mutableStateOf(permissions.all {
-            ContextCompat.checkSelfPermission(context, it) == PermissionChecker.PERMISSION_GRANTED
-        })
+        mutableStateOf(hasMediaPermission(context))
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        permitted = permissions.all { permission -> it[permission] == true }
+        permitted = hasMediaPermission(context)
     }
     val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     var trashFeedback by remember { mutableStateOf<TrashFeedback?>(null) }
@@ -2226,7 +2255,7 @@ private fun GalleryScaffold(
                         OutlinedTextField(
                             value = fileSearchQuery,
                             onValueChange = { fileSearchQuery = it },
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(
                                 platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false)
                             ),
@@ -4886,7 +4915,167 @@ private fun PhotoViewer(
         if (current.isVideo) videoEngine.load(current.uri) else videoEngine.player.pause()
     }
 
+    // ---- Motion Photo (Samsung / Google / Nokia) detection & in-place playback ----
+    val motionVideo by produceState<MotionVideo?>(initialValue = null, current.id, current.uri, current.isVideo) {
+        if (!current.isVideo) {
+            // Only images can be motion photos. Cheap filename hint or on-demand content parse.
+            value = withContext(Dispatchers.IO) {
+                MotionPhotoExtractor.detectMotionPhoto(context, current)
+            }
+        } else {
+            value = null
+        }
+    }
+    var isPlayingMotion by remember { mutableStateOf(false) }
+    var motionExtracting by remember { mutableStateOf(false) }
+    var motionEngine by remember { mutableStateOf<Media3VideoEngine?>(null) }
+    // Release the engine whenever it is replaced (stop / replay) or the viewer leaves
+    // composition. Capturing [motionEngine] into a local val before onDispose is what makes this
+    // correct: the closure holds the engine instance that *this* effect run created, not the
+    // latest state value, so swapping engines releases the old one rather than the new one.
+    DisposableEffect(motionEngine) {
+        val engine = motionEngine
+        onDispose { engine?.release() }
+    }
+    // Stop motion playback when leaving the current page.
+    LaunchedEffect(current.id) {
+        if (isPlayingMotion) {
+            motionEngine = null
+            isPlayingMotion = false
+        }
+    }
+    val onPlayMotion: () -> Unit = {
+        if (isPlayingMotion) {
+            motionEngine = null
+            isPlayingMotion = false
+        } else {
+            val mv = motionVideo
+            if (mv == null) {
+                motionExtracting = true
+                coroutineScope.launch {
+                    val extracted = withContext(Dispatchers.IO) {
+                        MotionPhotoExtractor.detectMotionPhoto(context, current)
+                    }
+                    motionExtracting = false
+                    if (extracted == null) {
+                        android.widget.Toast.makeText(
+                            context, context.getString(R.string.motion_extract_failed),
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        motionEngine = Media3VideoEngine(context).apply {
+                            setMuted(true)
+                            player.repeatMode = Player.REPEAT_MODE_ONE
+                            load(extracted.videoUri)
+                            player.playWhenReady = true
+                        }
+                        isPlayingMotion = true
+                    }
+                }
+            } else {
+                motionEngine = Media3VideoEngine(context).apply {
+                    setMuted(true)
+                    player.repeatMode = Player.REPEAT_MODE_ONE
+                    load(mv.videoUri)
+                    player.playWhenReady = true
+                }
+                isPlayingMotion = true
+            }
+        }
+    }
+
     val dismissOffsetY = remember { Animatable(0f) }
+    // ---- Depth Photo (Google GDepth / Nokia / OEM portrait) detection & rendering ----
+    val isDepthPhoto = currentExif?.isDepthPhoto == true
+    val depthPhoto by produceState<com.iris.gallery.decoder.DepthPhoto?>(
+        initialValue = null, current.id, current.uri, isDepthPhoto
+    ) {
+        if (isDepthPhoto && !current.isVideo) {
+            value = withContext(Dispatchers.IO) {
+                com.iris.gallery.decoder.DepthPhotoExtractor.detectDepthPhoto(context, current)
+            }
+        } else {
+            value = null
+        }
+    }
+    var depthEnabled by remember(current.id) { mutableStateOf(false) }
+    var depthFocus by remember(current.id) { mutableFloatStateOf(0.5f) }
+    var depthStrength by remember(current.id) { mutableStateOf(1f) }
+    var depthTransition by remember(current.id) { mutableFloatStateOf(0.15f) }
+    var depthPreviewBitmap by remember(current.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var depthRendering by remember(current.id) { mutableStateOf(false) }
+    // Re-render when depth params change (debounced).
+    LaunchedEffect(depthPhoto, depthEnabled, depthFocus, depthStrength, depthTransition) {
+        val dp = depthPhoto
+        if (dp != null && depthEnabled && dp.blurredImage != null) {
+            delay(150)  // debounce slider movement
+            depthRendering = true
+            withContext(Dispatchers.IO) {
+                // Decode the primary (sharp) image at a preview resolution.
+                val metrics = context.resources.displayMetrics
+                val maxDim = maxOf(metrics.widthPixels, metrics.heightPixels, 1080)
+                val targetSize = maxDim.coerceAtMost(1920)
+                val rawSharp = runCatching {
+                    val opts = android.graphics.BitmapFactory.Options().apply {
+                        inSampleSize = com.iris.gallery.decoder.calcSampleSize(current.width, current.height, targetSize)
+                    }
+                    if (current.path.isNotBlank()) {
+                        val f = java.io.File(current.path)
+                        if (f.exists() && f.canRead()) {
+                            android.graphics.BitmapFactory.decodeFile(f.absolutePath, opts)
+                        } else null
+                    } else {
+                        val targetUri = if (Build.VERSION.SDK_INT >= 29 &&
+                            current.uri.scheme == android.content.ContentResolver.SCHEME_CONTENT
+                        ) {
+                            runCatching { MediaStore.setRequireOriginal(current.uri) }.getOrDefault(current.uri)
+                        } else current.uri
+                        context.contentResolver.openInputStream(targetUri)?.use { s ->
+                            android.graphics.BitmapFactory.decodeStream(s, null, opts)
+                        }
+                    }
+                }.getOrNull()
+                if (rawSharp != null && dp.depthMap != null) {
+                    // BitmapFactory ignores EXIF orientation. Read it from the source
+                    // and rotate the sharp + blurred + depth map to match what Coil would
+                    // display, so the depth preview aligns with the original photo.
+                    val orientation = runCatching {
+                        val exif = if (current.path.isNotBlank() && java.io.File(current.path).canRead()) {
+                            androidx.exifinterface.media.ExifInterface(current.path)
+                        } else {
+                            context.contentResolver.openInputStream(current.uri)?.use { s ->
+                                androidx.exifinterface.media.ExifInterface(s)
+                            } ?: androidx.exifinterface.media.ExifInterface(current.path)
+                        }
+                        exif.getAttributeInt(
+                            androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                            androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL,
+                        )
+                    }.getOrDefault(androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL)
+                    val sharp = com.iris.gallery.decoder.applyExifOrientation(rawSharp, orientation)
+                    if (sharp !== rawSharp) rawSharp.recycle()
+                    val blurred = com.iris.gallery.decoder.applyExifOrientation(dp.blurredImage!!, orientation)
+                    val depthMap = com.iris.gallery.decoder.applyExifOrientation(dp.depthMap!!, orientation)
+                    val rendered = com.iris.gallery.decoder.DepthPhotoRenderer.render(
+                        sharp = sharp,
+                        blurred = blurred,
+                        depthMap = depthMap,
+                        isRangeInverse = dp.isRangeInverse,
+                        focusDepth = depthFocus,
+                        transition = depthTransition,
+                        strength = depthStrength,
+                        previewMaxDimension = targetSize,
+                    )
+                    depthPreviewBitmap = rendered
+                    if (sharp !== rendered) sharp.recycle()
+                }
+            }
+            depthRendering = false
+        } else {
+            depthPreviewBitmap = null
+        }
+    }
+
     var isDismissing by remember { mutableStateOf(false) }
     var viewerHeightPx by remember { mutableFloatStateOf(context.resources.displayMetrics.heightPixels.toFloat()) }
     val dismissThresholdPx = remember(context) { 120f * context.resources.displayMetrics.density }
@@ -4969,6 +5158,8 @@ private fun PhotoViewer(
                     autoPlay = autoPlay,
                     loop = loop,
                     doubleTapToZoom = videoDoubleTapToZoom,
+                    doubleTapZoomLevel = doubleTapZoomLevel,
+                    multiStageZoom = multiStageZoom,
                     gestureControls = videoGestureControls,
                     onTap = { controlsVisible = !controlsVisible },
                     onSwipeUp = { showInfo = true },
@@ -5000,12 +5191,20 @@ private fun PhotoViewer(
                     onMuteToggled = onSetVideoMuted,
                 )
             } else {
+                val isCurrent = page == pagerState.currentPage
                 ZoomablePhoto(
                     image = media,
-                    active = page == pagerState.currentPage,
+                    active = isCurrent,
                     doubleTapZoomLevel = doubleTapZoomLevel,
                     multiStageZoom = multiStageZoom,
                     pinchToRotate = pinchToRotate,
+                    motionVideo = if (isCurrent) motionVideo else null,
+                    isPlayingMotion = isCurrent && isPlayingMotion,
+                    motionExtracting = isCurrent && motionExtracting,
+                    motionPlayer = if (isCurrent) motionEngine?.player else null,
+                    onPlayMotion = onPlayMotion,
+                    depthBitmap = if (isCurrent) depthPreviewBitmap else null,
+                    depthRendering = isCurrent && depthRendering,
                     onTap = { controlsVisible = !controlsVisible },
                     onSwipeUp = { showInfo = true },
                     onSwipeDown = { triggerAnimatedDismiss() },
@@ -5201,6 +5400,94 @@ private fun PhotoViewer(
             }
           }
           }
+        }
+        // ---- Depth Photo control panel ----
+        if (depthPhoto != null && !current.isVideo) {
+            // Offset above the bottom control bar so it doesn't overlap the filmstrip.
+            val showFilmstripHere = showFilmstrip && images.size > 1
+            val bottomOffset = if (showFilmstripHere) 168.dp else 96.dp
+            AnimatedVisibility(
+                visible = controlsVisible,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, bottom = bottomOffset)
+                    .graphicsLayer { alpha = controlsDismissAlpha },
+                enter = fadeIn(tween(220)) + slideInVertically(
+                    animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow),
+                    initialOffsetY = { it }
+                ),
+                exit = fadeOut(tween(160)) + slideOutVertically(
+                    animationSpec = tween(180), targetOffsetY = { it / 2 }
+                ),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                    shape = RoundedCornerShape(24.dp),
+                    tonalElevation = 8.dp,
+                    modifier = Modifier.widthIn(max = 540.dp).fillMaxWidth(),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Icon(
+                                    if (depthEnabled) Icons.Filled.BlurOn else Icons.Outlined.BlurOff,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Text(
+                                    text = stringResource(R.string.depth_photo_title),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            if (depthRendering) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            }
+                            Switch(
+                                checked = depthEnabled,
+                                onCheckedChange = { depthEnabled = it },
+                            )
+                        }
+                        if (depthEnabled) {
+                            Text(
+                                text = stringResource(R.string.depth_focus),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Slider(
+                                value = depthFocus,
+                                onValueChange = { depthFocus = it },
+                                valueRange = 0f..1f,
+                            )
+                            Text(
+                                text = stringResource(R.string.depth_blur_strength),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Slider(
+                                value = depthStrength,
+                                onValueChange = { depthStrength = it },
+                                valueRange = 0f..1f,
+                            )
+                        }
+                    }
+                }
+            }
         }
         AnimatedVisibility(
           visible = controlsVisible,
@@ -6073,6 +6360,7 @@ private fun PhotoViewer(
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 private fun ZoomablePhoto(
     image: MediaImage,
@@ -6087,6 +6375,13 @@ private fun ZoomablePhoto(
     onDismissRelease: (Float) -> Unit = {},
     onRotateGestureTriggered: () -> Unit = {},
     onGainmapDetected: (Boolean) -> Unit = {},
+    motionVideo: MotionVideo? = null,
+    isPlayingMotion: Boolean = false,
+    motionExtracting: Boolean = false,
+    motionPlayer: Player? = null,
+    onPlayMotion: () -> Unit = {},
+    depthBitmap: android.graphics.Bitmap? = null,
+    depthRendering: Boolean = false,
     onZoomChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
@@ -6117,8 +6412,26 @@ private fun ZoomablePhoto(
         cachedThumb?.let { BitmapPainter(it.asImageBitmap()) }
     }
 
-    val imageRequest: ImageRequest = remember(image.id, image.uri) {
-        val reqBuilder = ImageRequest.Builder(context).data(image.uri)
+    // For Apple Live Photo .livp (zip) files, the still JPEG lives inside the archive.
+    // Extract it to a temp cache file and use that URI for Coil so the image displays.
+    val livpJpeg = remember(image.id, image.path) { image.livpJpegCacheFile }
+    LaunchedEffect(image.id, image.path) {
+        if (livpJpeg != null && (!livpJpeg.exists() || livpJpeg.length() == 0L)) {
+            withContext(Dispatchers.IO) {
+                // Force motion extraction which also writes the JPEG cache file.
+                MotionPhotoExtractor.detectMotionPhoto(context, image)
+            }
+        }
+    }
+    val displayUri = remember(image.id, image.uri, livpJpeg?.length()) {
+        val cachedJpeg = livpJpeg
+        if (cachedJpeg != null && cachedJpeg.exists() && cachedJpeg.length() > 0) {
+            Uri.fromFile(cachedJpeg)
+        } else image.uri
+    }
+
+    val imageRequest: ImageRequest = remember(image.id, displayUri) {
+        val reqBuilder = ImageRequest.Builder(context).data(displayUri)
         if (image.isSvg) {
             val metrics = context.resources.displayMetrics
             val maxScreen = maxOf(metrics.widthPixels, metrics.heightPixels, 2560)
@@ -6134,6 +6447,11 @@ private fun ZoomablePhoto(
     val painter = rememberAsyncImagePainter(model = imageRequest)
     val painterState by painter.state.collectAsState()
     val fullImageLoaded = painterState is AsyncImagePainter.State.Success
+
+    // When a depth-blended preview is available, display it instead of the raw image.
+    val depthPainter = remember(depthBitmap) {
+        depthBitmap?.let { BitmapPainter(it.asImageBitmap()) }
+    }
 
     LaunchedEffect(painterState) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -6221,7 +6539,7 @@ private fun ZoomablePhoto(
                                         containerSize.height.toFloat() / displayedHeight.coerceAtLeast(1f)
                                     ).coerceIn(1f, 8f)
                                     val originalScale = if (image.isSvg) 2.5f else (imgWidth / displayedWidth.coerceAtLeast(1f)).coerceIn(1f, 8f)
-                                    val candidateStages = listOf(fillScale, originalScale)
+                                    val candidateStages = listOf(fillScale, originalScale, doubleTapZoomLevel)
                                         .filter { it > 1.15f }
                                         .sorted()
                                     val distinctStages = mutableListOf<Float>()
@@ -6234,10 +6552,15 @@ private fun ZoomablePhoto(
                                         distinctStages.add(doubleTapZoomLevel.coerceIn(1.5f, 4f))
                                     }
                                     val stages = listOf(1f) + distinctStages
+                                    // Use the animation's target value (the end of the current
+                                    // tween) instead of the live value so that rapid double-taps
+                                    // while a previous zoom is still animating advance to the
+                                    // next stage instead of stalling on the same one.
+                                    val referenceScale = scaleAnim.targetValue
                                     val nextScale = if (kotlin.math.abs(rotationAnim.value) > 1f) {
                                         1f
                                     } else {
-                                        stages.firstOrNull { it > currentScale + 0.15f } ?: 1f
+                                        stages.firstOrNull { it > referenceScale + 0.15f } ?: 1f
                                     }
 
                                     if (nextScale <= 1.05f) {
@@ -6262,10 +6585,13 @@ private fun ZoomablePhoto(
                     )
                 }
                 .pointerInput(image.id, pinchToRotate) {
+                    val touchSlop = viewConfiguration.touchSlop
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         var totalDragY = 0f
                         var totalDragX = 0f
+                        var singleFingerPanDistance = 0f
+                        var panStarted = false
                         var totalRotation = rotationAnim.value
                         var accumulatedAngleDelta = 0f
                         var isRotating = false
@@ -6279,7 +6605,14 @@ private fun ZoomablePhoto(
                             val pointersDown = event.changes.count { it.pressed }
                             val scale = scaleAnim.value
                             val offset = offsetAnim.value
-                            if (pointersDown >= 2 || (pointersDown == 1 && scale > 1f)) {
+                            if (pointersDown == 1 && scale > 1f && !panStarted) {
+                                val panChange = event.calculatePan()
+                                singleFingerPanDistance += panChange.getDistance()
+                                if (singleFingerPanDistance >= touchSlop) {
+                                    panStarted = true
+                                }
+                            }
+                            if (pointersDown >= 2 || (pointersDown == 1 && scale > 1f && panStarted)) {
                                 if (isDismissDragging) {
                                     isDismissDragging = false
                                     onDismissRelease(0f)
@@ -6420,7 +6753,11 @@ private fun ZoomablePhoto(
                     translate(left, top)
                 }) {
                     val drawSize = androidx.compose.ui.geometry.Size(fitWidth, fitHeight)
-                    if (fullImageLoaded) {
+                    if (depthPainter != null) {
+                        with(depthPainter) {
+                            draw(size = drawSize)
+                        }
+                    } else if (fullImageLoaded) {
                         with(painter) {
                             draw(size = drawSize)
                         }
@@ -6432,6 +6769,161 @@ private fun ZoomablePhoto(
                         with(painter) {
                             draw(size = drawSize)
                         }
+                    }
+                }
+            }
+        }
+
+        // ---- Motion Photo overlays ----
+        // In-place looping video player (mute + repeat). The still image acts as poster.
+        // Apply the same transform (scale/offset/rotate) as the still image so the video
+        // aligns exactly with it and can be zoomed/panned.
+        if (isPlayingMotion && motionPlayer != null) {
+            // Compute displayed image rect so the video overlay matches it exactly.
+            val intrinsic = painter.intrinsicSize
+            val hasValidIntrinsic = intrinsic.isSpecified && intrinsic.width > 0f && intrinsic.height > 0f
+            val thumbIntrinsic = thumbPainter?.intrinsicSize
+            val hasThumbIntrinsic = thumbIntrinsic != null && thumbIntrinsic.isSpecified && thumbIntrinsic.width > 0f && thumbIntrinsic.height > 0f
+            val imgWidth = when {
+                hasValidIntrinsic -> intrinsic.width
+                hasThumbIntrinsic -> thumbIntrinsic!!.width
+                image.width > 0 -> image.width.toFloat()
+                else -> 1080f
+            }
+            val imgHeight = when {
+                hasValidIntrinsic -> intrinsic.height
+                hasThumbIntrinsic -> thumbIntrinsic!!.height
+                image.height > 0 -> image.height.toFloat()
+                else -> 1080f
+            }
+
+            if (imgWidth > 0f && imgHeight > 0f && containerSize.width > 0 && containerSize.height > 0) {
+                val imageAspect = imgWidth / imgHeight
+                val containerAspect = containerSize.width.toFloat() / containerSize.height.coerceAtLeast(1)
+                val fitW: Float
+                val fitH: Float
+                if (imageAspect > containerAspect) {
+                    fitW = containerSize.width.toFloat()
+                    fitH = fitW / imageAspect
+                } else {
+                    fitH = containerSize.height.toFloat()
+                    fitW = fitH * imageAspect
+                }
+                val motionScale = scaleAnim.value
+                val motionOffset = offsetAnim.value
+                val motionRotation = rotationAnim.value
+                val leftPx = (containerSize.width - fitW) / 2f
+                val topPx = (containerSize.height - fitH) / 2f
+                val wDp = with(androidx.compose.ui.platform.LocalDensity.current) { fitW.toDp() }
+                val hDp = with(androidx.compose.ui.platform.LocalDensity.current) { fitH.toDp() }
+                val lDp = with(androidx.compose.ui.platform.LocalDensity.current) { leftPx.toDp() }
+                val tDp = with(androidx.compose.ui.platform.LocalDensity.current) { topPx.toDp() }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = motionOffset.x
+                            translationY = motionOffset.y
+                            scaleX = motionScale
+                            scaleY = motionScale
+                            rotationZ = motionRotation
+                        }
+                        .pointerInput(image.id) {
+                            detectTapGestures(onTap = { onPlayMotion() })
+                        },
+                    contentAlignment = Alignment.TopStart,
+                ) {
+                    AndroidView<PlayerView>(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                useController = false
+                                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                player = motionPlayer
+                                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                findViewById<android.view.View>(androidx.media3.ui.R.id.exo_shutter)?.visibility = android.view.View.GONE
+                                // Don't capture touch events — let gestures pass through
+                                // to the Canvas below for zoom/pan.
+                                isClickable = false
+                                isFocusable = false
+                            }
+                        },
+                        update = { view ->
+                            view.player = motionPlayer
+                            view.resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        },
+                        modifier = Modifier
+                            .padding(start = lDp, top = tDp)
+                            .size(width = wDp, height = hDp),
+                    )
+                }
+            } else {
+                // Fallback: full-screen fit (prevents black screen before intrinsic is known)
+                AndroidView<PlayerView>(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = false
+                            resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            player = motionPlayer
+                            setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            findViewById<android.view.View>(androidx.media3.ui.R.id.exo_shutter)?.visibility = android.view.View.GONE
+                            isClickable = false
+                            isFocusable = false
+                        }
+                    },
+                    update = { view -> view.player = motionPlayer },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = { onPlayMotion() })
+                        }
+                )
+            }
+        }
+
+        // Extraction in progress indicator.
+        if (motionExtracting) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(40.dp),
+                )
+            }
+        }
+
+        // Motion play button. Positioned above the bottom control bar / filmstrip
+        // so it stays visible even when the viewer is not fullscreen.
+        if (motionVideo != null && !isPlayingMotion && !motionExtracting && !image.isSvg && !image.isRaw) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomEnd,
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.55f),
+                    tonalElevation = 0.dp,
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .padding(bottom = 140.dp, end = 20.dp)
+                        .size(48.dp)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = { onPlayMotion() })
+                        },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Outlined.PlayArrow,
+                            contentDescription = stringResource(R.string.motion_play),
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp),
+                        )
                     }
                 }
             }
