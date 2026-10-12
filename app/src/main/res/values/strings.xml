@@ -7,6 +7,7 @@
 
     <!-- Navigation Tabs -->
     <string name="tab_photos">Photos</string>
+    <string name="tab_media">Media</string>
     <string name="tab_albums">Albums</string>
     <string name="tab_favorites">Favorites</string>
     <string name="tab_library">Library</string>
@@ -774,6 +775,14 @@
     <string name="dialog_add_excluded_folder_hint">e.g. Music or /Music</string>
     <string name="dialog_excluded_folder_suggestions">Suggestions:</string>
     <string name="dialog_folder_already_excluded">Folder is already excluded</string>
+    <string name="settings_photos_only_title">Photos only</string>
+    <string name="settings_photos_only_desc">Show only photos and hide videos from the main timeline</string>
+    <string name="exclude_option_choose_album">Choose album to exclude</string>
+    <string name="exclude_option_choose_album_desc">Pick an album to hide its folder from the gallery</string>
+    <string name="exclude_option_system_picker">Use system folder picker</string>
+    <string name="exclude_option_system_picker_desc">Browse device storage to select any directory</string>
+    <string name="dialog_choose_album_to_exclude_title">Select album to exclude</string>
+    <string name="no_albums_to_exclude">No albums found</string>
 
     <string name="section_videos">Videos</string>
     <string name="section_videos_desc">%1$d videos in your library</string>

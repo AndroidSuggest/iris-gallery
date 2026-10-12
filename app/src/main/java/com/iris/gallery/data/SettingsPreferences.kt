@@ -156,6 +156,7 @@ data class SettingsState(
     val dismissedRotateTip: Boolean = false,
     val doubleTapZoomLevel: Float = 2.5f,
     val multiStageZoom: Boolean = false,
+    val photosOnly: Boolean = false,
     val startupTab: StartupTab = StartupTab.PHOTOS,
     val showPhotosTab: Boolean = true,
     val showAlbumsTab: Boolean = true,
@@ -230,6 +231,7 @@ class SettingsPreferences(context: Context) {
     fun setDismissedRotateTip(dismissed: Boolean) = update { copy(dismissedRotateTip = dismissed) }
     fun setDoubleTapZoomLevel(level: Float) = update { copy(doubleTapZoomLevel = level) }
     fun setMultiStageZoom(enabled: Boolean) = update { copy(multiStageZoom = enabled) }
+    fun setPhotosOnly(enabled: Boolean) = update { copy(photosOnly = enabled) }
     fun setStartupTab(tab: StartupTab) = update { copy(startupTab = tab) }
     fun setShowPhotosTab(show: Boolean) = update {
         if (!show && !showAlbumsTab && !showFavoritesTab && !showLibraryTab) this
@@ -340,6 +342,7 @@ class SettingsPreferences(context: Context) {
             dismissedRotateTip = prefs.getBoolean("dismissed_rotate_tip", false),
             doubleTapZoomLevel = prefs.getFloat("double_tap_zoom_level", 2.5f),
             multiStageZoom = prefs.getBoolean("multi_stage_zoom", false),
+            photosOnly = prefs.getBoolean("photos_only", false),
             startupTab = runCatching { StartupTab.valueOf(startupStr.orEmpty()) }.getOrDefault(StartupTab.PHOTOS),
             showPhotosTab = prefs.getBoolean("show_photos_tab", true),
             showAlbumsTab = prefs.getBoolean("show_albums_tab", true),
@@ -400,6 +403,7 @@ class SettingsPreferences(context: Context) {
             .putBoolean("dismissed_rotate_tip", state.dismissedRotateTip)
             .putFloat("double_tap_zoom_level", state.doubleTapZoomLevel)
             .putBoolean("multi_stage_zoom", state.multiStageZoom)
+            .putBoolean("photos_only", state.photosOnly)
             .putString("startup_tab", state.startupTab.name)
             .putBoolean("show_photos_tab", state.showPhotosTab)
             .putBoolean("show_albums_tab", state.showAlbumsTab)

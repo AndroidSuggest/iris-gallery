@@ -111,6 +111,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     suspend fun restoreFromTrash(mediaList: List<MediaImage>): List<MediaImage> {
         val result = trashRepository.restoreFromTrash(mediaList)
+        val restoredIds = result.map { it.id }.toSet()
+        val restoredPaths = result.map { it.path }.filter { it.isNotBlank() }.toSet()
+        repository.clearRecentMovedOrDeleted(restoredIds, restoredPaths)
         refresh()
         return result
     }

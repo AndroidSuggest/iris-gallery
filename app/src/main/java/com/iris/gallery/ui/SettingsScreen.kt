@@ -38,12 +38,17 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.provider.DocumentsContract
+import java.io.File
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.FolderOff
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
@@ -138,6 +143,7 @@ fun SettingsScreen(
     settings: SettingsState,
     preferences: SettingsPreferences,
     excludedFolders: Set<String> = emptySet(),
+    availableAlbums: List<MediaAlbum> = emptyList(),
     onRemoveExcludedFolder: (String) -> Unit = {},
     onAddExcludedFolder: (String) -> Unit = {},
     onOpenAbout: () -> Unit = {},
@@ -1171,7 +1177,7 @@ fun SettingsScreen(
                                         preferences.setStartupTab(fallback)
                                     }
                                 },
-                                label = { Text(stringResource(R.string.tab_photos), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                                label = { Text(stringResource(if (settings.photosOnly) R.string.tab_photos else R.string.tab_media), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
                             )
                             FilterChip(
                                 modifier = Modifier.weight(1f),
@@ -1244,7 +1250,7 @@ fun SettingsScreen(
                                 selected = settings.startupTab == StartupTab.PHOTOS,
                                 enabled = settings.showPhotosTab,
                                 onClick = { preferences.setStartupTab(StartupTab.PHOTOS) },
-                                label = { Text(stringResource(R.string.tab_photos), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
+                                label = { Text(stringResource(if (settings.photosOnly) R.string.tab_photos else R.string.tab_media), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) }
                             )
                             FilterChip(
                                 modifier = Modifier.weight(1f),
@@ -1271,6 +1277,15 @@ fun SettingsScreen(
                             )
                         }
                     }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.settings_photos_only_title),
+                        subtitle = stringResource(R.string.settings_photos_only_desc),
+                        checked = settings.photosOnly,
+                        onCheckedChange = { preferences.setPhotosOnly(it) }
+                    )
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
@@ -1868,6 +1883,7 @@ fun SettingsScreen(
     if (showExcludedFoldersDialog) {
         ExcludedFoldersDialog(
             excludedFolders = excludedFolders,
+            availableAlbums = availableAlbums,
             onRemoveExcludedFolder = onRemoveExcludedFolder,
             onAddExcludedFolder = onAddExcludedFolder,
             onDismissRequest = { showExcludedFoldersDialog = false }
@@ -1875,16 +1891,67 @@ fun SettingsScreen(
     }
 }
 
+private fun getPathFromTreeUri(uri: Uri): String? {
+    val authority = uri.authority.orEmpty()
+    val docId = try {
+        DocumentsContract.getTreeDocumentId(uri)
+    } catch (_: Exception) {
+        try {
+            DocumentsContract.getDocumentId(uri)
+        } catch (_: Exception) {
+            uri.lastPathSegment.orEmpty()
+        }
+    }
+    if (docId.isBlank()) return null
+    if (authority == "com.android.externalstorage.documents" || authority.endsWith(".documents")) {
+        val split = docId.split(":")
+        val type = split.getOrNull(0).orEmpty()
+        val relPath = if (split.size > 1) split[1].removePrefix("/") else ""
+        return if (type.equals("primary", ignoreCase = true)) {
+            if (relPath.isBlank()) "/storage/emulated/0" else "/storage/emulated/0/$relPath"
+        } else if (type.isNotBlank()) {
+            if (relPath.isBlank()) "/storage/$type" else "/storage/$type/$relPath"
+        } else {
+            relPath
+        }
+    }
+    if (docId.startsWith("raw:")) {
+        return docId.removePrefix("raw:")
+    }
+    if (docId.startsWith("/")) {
+        return docId
+    }
+    return null
+}
+
 @Composable
 fun ExcludedFoldersDialog(
     excludedFolders: Set<String>,
+    availableAlbums: List<MediaAlbum> = emptyList(),
     onRemoveExcludedFolder: (String) -> Unit,
     onAddExcludedFolder: (String) -> Unit = {},
     onDismissRequest: () -> Unit,
 ) {
     val context = LocalContext.current
-    var showAddFolderDialog by remember { mutableStateOf(false) }
-    var folderInput by remember { mutableStateOf("") }
+    var showChooserDialog by remember { mutableStateOf(false) }
+    var showAlbumPickerDialog by remember { mutableStateOf(false) }
+
+    val openDocumentTreeLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val resolved = getPathFromTreeUri(uri)
+            if (resolved != null && resolved.isNotBlank()) {
+                val clean = resolved.trimEnd('/')
+                if (clean in excludedFolders) {
+                    Toast.makeText(context, R.string.dialog_folder_already_excluded, Toast.LENGTH_SHORT).show()
+                } else {
+                    onAddExcludedFolder(clean)
+                    Toast.makeText(context, R.string.toast_folder_excluded, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismissRequest,
@@ -1919,7 +1986,7 @@ fun ExcludedFoldersDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = { showAddFolderDialog = true }) {
+            TextButton(onClick = { showChooserDialog = true }) {
                 Icon(Icons.Outlined.Add, null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
                 Text(stringResource(R.string.action_add_excluded_folder))
@@ -1932,65 +1999,182 @@ fun ExcludedFoldersDialog(
         }
     )
 
-    if (showAddFolderDialog) {
-        val commonSuggestions = listOf("Music", "Podcasts", "Audiobooks", "Documents")
+    if (showChooserDialog) {
         AlertDialog(
-            onDismissRequest = { showAddFolderDialog = false; folderInput = "" },
+            onDismissRequest = { showChooserDialog = false },
             title = { Text(stringResource(R.string.dialog_add_excluded_folder_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        stringResource(R.string.dialog_add_excluded_folder_message),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = folderInput,
-                        onValueChange = { folderInput = it },
-                        placeholder = { Text(stringResource(R.string.dialog_add_excluded_folder_hint)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text(
-                        stringResource(R.string.dialog_excluded_folder_suggestions),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showChooserDialog = false
+                                showAlbumPickerDialog = true
+                            }
                     ) {
-                        commonSuggestions.forEach { suggestion ->
-                            AssistChip(
-                                onClick = { folderInput = suggestion },
-                                label = { Text(suggestion) }
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.PhotoAlbum,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
                             )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    stringResource(R.string.exclude_option_choose_album),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    stringResource(R.string.exclude_option_choose_album_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showChooserDialog = false
+                                openDocumentTreeLauncher.launch(null)
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.FolderOpen,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    stringResource(R.string.exclude_option_system_picker),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    stringResource(R.string.exclude_option_system_picker_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val trimmed = folderInput.trim().trimEnd('/')
-                        if (trimmed.isNotBlank()) {
-                            if (trimmed in excludedFolders) {
-                                Toast.makeText(context, R.string.dialog_folder_already_excluded, Toast.LENGTH_SHORT).show()
-                            } else {
-                                onAddExcludedFolder(trimmed)
-                                Toast.makeText(context, R.string.toast_folder_excluded, Toast.LENGTH_SHORT).show()
-                                showAddFolderDialog = false
-                                folderInput = ""
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showChooserDialog = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
+    if (showAlbumPickerDialog) {
+        AlertDialog(
+            onDismissRequest = { showAlbumPickerDialog = false },
+            title = { Text(stringResource(R.string.dialog_choose_album_to_exclude_title)) },
+            text = {
+                if (availableAlbums.isEmpty()) {
+                    Text(
+                        stringResource(R.string.no_albums_to_exclude),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp)
+                    ) {
+                        items(availableAlbums, key = { it.id }) { album ->
+                            val folderPath = remember(album) {
+                                album.images.firstOrNull { it.path.isNotBlank() }?.let { File(it.path).parent }
+                                    ?: File(album.cover.path).parent
+                                    ?: ""
+                            }
+                            val isAlreadyExcluded = remember(folderPath, excludedFolders) {
+                                folderPath.isNotBlank() && folderPath in excludedFolders
+                            }
+
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isAlreadyExcluded)
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                                    else
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !isAlreadyExcluded) {
+                                        if (folderPath.isNotBlank()) {
+                                            val clean = folderPath.trimEnd('/')
+                                            onAddExcludedFolder(clean)
+                                            Toast.makeText(context, R.string.toast_folder_excluded, Toast.LENGTH_SHORT).show()
+                                            showAlbumPickerDialog = false
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Card(
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.size(52.dp)
+                                    ) {
+                                        MediaThumbnail(album.cover, Modifier.fillMaxSize())
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = album.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (isAlreadyExcluded) {
+                                                stringResource(R.string.dialog_folder_already_excluded)
+                                            } else {
+                                                "${album.images.size} items • $folderPath"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (isAlreadyExcluded)
+                                                MaterialTheme.colorScheme.error
+                                            else
+                                                MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
-                    },
-                    enabled = folderInput.isNotBlank()
-                ) {
-                    Text(stringResource(R.string.action_exclude_folder))
+                    }
                 }
             },
+            confirmButton = {},
             dismissButton = {
-                TextButton(onClick = { showAddFolderDialog = false; folderInput = "" }) {
+                TextButton(onClick = { showAlbumPickerDialog = false }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }

@@ -2,6 +2,8 @@ package com.iris.gallery.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.os.Build
 import android.provider.MediaStore
 import android.util.LruCache
@@ -191,7 +193,65 @@ private fun loadThumbnail(context: Context, image: MediaImage, targetSizePx: Int
                 }
                 (res.image as? coil3.BitmapImage)?.bitmap
             }.getOrNull()
-        } else null
+        } else if (!image.isVideo) {
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val source = if (image.path.isNotBlank() && java.io.File(image.path).exists()) {
+                        ImageDecoder.createSource(java.io.File(image.path))
+                    } else {
+                        ImageDecoder.createSource(context.contentResolver, image.uri)
+                    }
+                    ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                        val maxDim = maxOf(info.size.width, info.size.height)
+                        var sample = 1
+                        while (maxDim / (sample * 2) >= targetSizePx) {
+                            sample *= 2
+                        }
+                        if (sample > 1) {
+                            decoder.setTargetSampleSize(sample)
+                        }
+                    }
+                } else {
+                    val openStream: () -> java.io.InputStream? = {
+                        if (image.path.isNotBlank() && java.io.File(image.path).exists()) {
+                            java.io.FileInputStream(image.path)
+                        } else {
+                            context.contentResolver.openInputStream(image.uri)
+                        }
+                    }
+                    openStream()?.use { s ->
+                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeStream(s, null, opts)
+                        val sample = maxOf(opts.outWidth / targetSizePx, opts.outHeight / targetSizePx, 1)
+                        val opts2 = BitmapFactory.Options().apply { inSampleSize = sample }
+                        openStream()?.use { s2 ->
+                            BitmapFactory.decodeStream(s2, null, opts2)
+                        }
+                    }
+                }
+            }.getOrNull()
+        } else {
+            runCatching {
+                android.media.MediaMetadataRetriever().use { mmr ->
+                    if (image.path.isNotBlank() && java.io.File(image.path).exists()) {
+                        mmr.setDataSource(image.path)
+                    } else {
+                        mmr.setDataSource(context, image.uri)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        mmr.getScaledFrameAtTime(
+                            -1L,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            targetSizePx,
+                            targetSizePx
+                        )
+                    } else {
+                        mmr.getFrameAtTime(-1L)
+                    }
+                }
+            }.getOrNull()
+        }
     }
     finalBitmap?.prepareToDraw()
     finalBitmap?.let { ThumbnailCache.put(cacheKey, it) }

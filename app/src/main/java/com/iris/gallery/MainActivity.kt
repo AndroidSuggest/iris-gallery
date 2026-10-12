@@ -1990,7 +1990,7 @@ private fun GalleryScaffold(
     val albumPhotoGridState = rememberLazyGridState()
     val favoriteGridState = rememberLazyGridState()
     val libraryGridState = rememberLazyGridState()
-    val photoTabLabel = stringResource(R.string.tab_photos)
+    val photoTabLabel = stringResource(if (settings.photosOnly) R.string.tab_photos else R.string.tab_media)
     val albumsTabLabel = stringResource(R.string.tab_albums)
     val favoritesTabLabel = stringResource(R.string.tab_favorites)
     val libraryTabLabel = stringResource(R.string.tab_library)
@@ -2054,7 +2054,10 @@ private fun GalleryScaffold(
         }
     }
 
-    val displayedPhotos = remember(images, fileSearchQuery) { filterMediaList(images, fileSearchQuery) }
+    val displayedPhotos = remember(images, fileSearchQuery, settings.photosOnly) {
+        val base = if (settings.photosOnly) images.filterNot { it.isVideo } else images
+        filterMediaList(base, fileSearchQuery)
+    }
     val displayedFavoritePhotos = remember(favoriteImages, fileSearchQuery) { filterMediaList(favoriteImages, fileSearchQuery) }
     val displayedVideos = remember(images, fileSearchQuery) {
         val allVideos = images.filter { it.isVideo }
@@ -2608,7 +2611,7 @@ private fun GalleryScaffold(
                     ) {
                         visibleTabs.forEachIndexed { index, tab ->
                             val isSelected = currentVisibleTab == tab
-                            val label = stringResource(tab.labelRes)
+                            val label = if (tab == GalleryTab.PHOTOS) photoTabLabel else stringResource(tab.labelRes)
                             NavigationBarItem(
                                 selected = isSelected,
                                 onClick = { handleTabSelected(index) },
@@ -3303,7 +3306,7 @@ private fun GalleryScaffold(
             ) {
                 visibleTabs.forEachIndexed { index, tab ->
                     val isSelected = currentVisibleTab == tab
-                    val label = stringResource(tab.labelRes)
+                    val label = if (tab == GalleryTab.PHOTOS) photoTabLabel else stringResource(tab.labelRes)
                     NavigationBarItem(
                         selected = isSelected,
                         onClick = { handleTabSelected(index) },
@@ -3338,6 +3341,7 @@ private fun GalleryScaffold(
     if (showExcludedFoldersDialog) {
         com.iris.gallery.ui.ExcludedFoldersDialog(
             excludedFolders = excludedFolders,
+            availableAlbums = availableAlbums,
             onRemoveExcludedFolder = onRemoveExcludedFolder,
             onAddExcludedFolder = onAddExcludedFolder,
             onDismissRequest = { showExcludedFoldersDialog = false }
@@ -3889,6 +3893,7 @@ private fun GalleryScaffold(
                 settings = settings,
                 preferences = settingsPreferences,
                 excludedFolders = excludedFolders,
+                availableAlbums = availableAlbums,
                 onRemoveExcludedFolder = onRemoveExcludedFolder,
                 onAddExcludedFolder = onAddExcludedFolder,
                 onOpenAbout = { activeOverlayScreen = "about" },

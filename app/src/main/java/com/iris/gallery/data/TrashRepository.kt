@@ -44,6 +44,8 @@ data class TrashItem(
     val orientation: Int = 0,
     val title: String = "",
     val description: String = "",
+    val dateModified: Long = 0L,
+    val dateAdded: Long = 0L,
 )
 
 class TrashRepository(private val context: Context) {
@@ -121,6 +123,8 @@ class TrashRepository(private val context: Context) {
                     orientation = item.orientation,
                     title = item.title,
                     description = item.description,
+                    dateModified = item.dateModified,
+                    dateAdded = item.dateAdded,
                 )
             } else {
                 null
@@ -226,6 +230,15 @@ class TrashRepository(private val context: Context) {
             }
 
             if (copied && targetFile.exists()) {
+                val effectiveMod = when {
+                    item.dateModified > 0L -> item.dateModified
+                    srcFile != null && srcFile.lastModified() > 0L -> srcFile.lastModified()
+                    item.dateTaken > 0L -> item.dateTaken
+                    else -> 0L
+                }
+                if (effectiveMod > 0L) {
+                    targetFile.setLastModified(effectiveMod)
+                }
                 val trashItem = TrashItem(
                     id = uniqueId,
                     trashFileName = trashFileName,
@@ -244,6 +257,8 @@ class TrashRepository(private val context: Context) {
                     orientation = item.orientation,
                     title = item.title,
                     description = item.description,
+                    dateModified = effectiveMod,
+                    dateAdded = item.dateAdded,
                 )
                 currentItems.add(trashItem)
                 val media = MediaImage(
@@ -263,6 +278,8 @@ class TrashRepository(private val context: Context) {
                     orientation = item.orientation,
                     title = item.title,
                     description = item.description,
+                    dateModified = effectiveMod,
+                    dateAdded = item.dateAdded,
                 )
                 trashedList.add(media)
                 originalList.add(item)
@@ -336,6 +353,8 @@ class TrashRepository(private val context: Context) {
                         orientation = item.orientation,
                         title = item.title,
                         description = item.description,
+                        dateModified = item.dateModified,
+                        dateAdded = item.dateAdded,
                     )
                 )
             }
@@ -383,6 +402,15 @@ class TrashRepository(private val context: Context) {
 
     private fun restoreFileToStorage(item: TrashItem, trashFile: File): Boolean {
         return try {
+            val effectiveModMs = when {
+                item.dateModified > 0L -> item.dateModified
+                item.dateTaken > 0L -> item.dateTaken
+                else -> trashFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+            }
+            val effectiveTakenMs = if (item.dateTaken > 0L) item.dateTaken else effectiveModMs
+            val effectiveModSec = effectiveModMs / 1000L
+            val effectiveAddedSec = if (item.dateAdded > 0L) item.dateAdded / 1000L else effectiveModSec
+
             if (hasAllFilesAccess()) {
                 val destFile = if (item.originalPath.isNotBlank()) {
                     val file = File(item.originalPath)
@@ -395,8 +423,8 @@ class TrashRepository(private val context: Context) {
                     File(fallbackDir, item.originalName)
                 }
                 trashFile.copyTo(destFile, overwrite = true)
-                if (item.dateTaken > 0) {
-                    destFile.setLastModified(item.dateTaken)
+                if (effectiveModMs > 0L) {
+                    destFile.setLastModified(effectiveModMs)
                 }
                 MediaScannerConnection.scanFile(
                     context,
@@ -407,17 +435,15 @@ class TrashRepository(private val context: Context) {
                 true
             } else if (Build.VERSION.SDK_INT >= 29) {
                 val relativePath = computeRelativePath(item.originalPath, item.isVideo)
-                val nowSec = System.currentTimeMillis() / 1000
-                val dateSec = if (item.dateTaken > 0) item.dateTaken / 1000 else nowSec
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, item.originalName)
                     put(
                         MediaStore.MediaColumns.MIME_TYPE,
                         item.mimeType.ifBlank { if (item.isVideo) "video/mp4" else "image/jpeg" }
                     )
-                    put(MediaStore.MediaColumns.DATE_ADDED, nowSec)
-                    put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                    put(MediaStore.MediaColumns.DATE_TAKEN, item.dateTaken)
+                    put(MediaStore.MediaColumns.DATE_ADDED, effectiveAddedSec)
+                    put(MediaStore.MediaColumns.DATE_MODIFIED, effectiveModSec)
+                    put(MediaStore.MediaColumns.DATE_TAKEN, effectiveTakenMs)
                     if (!item.isVideo) {
                         put(MediaStore.Images.Media.ORIENTATION, item.orientation)
                     }
@@ -439,7 +465,9 @@ class TrashRepository(private val context: Context) {
                 }
                 values.clear()
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                values.put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
+                values.put(MediaStore.MediaColumns.DATE_MODIFIED, effectiveModSec)
+                values.put(MediaStore.MediaColumns.DATE_TAKEN, effectiveTakenMs)
+                values.put(MediaStore.MediaColumns.DATE_ADDED, effectiveAddedSec)
                 context.contentResolver.update(newUri, values, null, null)
                 true
             } else {
@@ -455,8 +483,8 @@ class TrashRepository(private val context: Context) {
                 }.apply { mkdirs() }
                 val destFile = File(publicDir, item.originalName)
                 trashFile.copyTo(destFile, overwrite = true)
-                if (item.dateTaken > 0) {
-                    destFile.setLastModified(item.dateTaken)
+                if (effectiveModMs > 0L) {
+                    destFile.setLastModified(effectiveModMs)
                 }
                 MediaScannerConnection.scanFile(
                     context,
@@ -537,6 +565,8 @@ class TrashRepository(private val context: Context) {
                         orientation = obj.optInt("orientation"),
                         title = obj.optString("title"),
                         description = obj.optString("description"),
+                        dateModified = obj.optLong("dateModified"),
+                        dateAdded = obj.optLong("dateAdded"),
                     )
                 )
             }
@@ -569,6 +599,8 @@ class TrashRepository(private val context: Context) {
                     put("orientation", item.orientation)
                     put("title", item.title)
                     put("description", item.description)
+                    put("dateModified", item.dateModified)
+                    put("dateAdded", item.dateAdded)
                 }
                 array.put(obj)
             }
