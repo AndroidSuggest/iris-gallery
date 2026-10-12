@@ -58,11 +58,42 @@ val MediaImage.isGif: Boolean
 val MediaImage.isMotionPhoto: Boolean
     get() {
         if (isVideo || isScreenshot) return false
-        return name.startsWith("MVIMG_", ignoreCase = true) ||
-                name.contains("_MP.jpg", ignoreCase = true) ||
-                name.contains("_MP.heic", ignoreCase = true) ||
-                name.contains("_MOTION.", ignoreCase = true) ||
-                name.startsWith("MP_", ignoreCase = true)
+        // Apple Live Photo exported as .livp (zip containing JPG + MOV)
+        if (name.endsWith(".livp", ignoreCase = true) ||
+            path.endsWith(".livp", ignoreCase = true)) return true
+        // Google / Samsung motion photo filename hints
+        if (name.startsWith("MVIMG_", ignoreCase = true) ||
+            name.contains("_MP.jpg", ignoreCase = true) ||
+            name.contains("_MP.heic", ignoreCase = true) ||
+            name.contains("_MOTION.", ignoreCase = true) ||
+            name.startsWith("MP_", ignoreCase = true)) return true
+        // Apple Live Photo: paired .MOV/.mov file beside this image
+        if (path.isNotBlank()) {
+            val stem = path.substringBeforeLast('.', "")
+            if (stem.isNotBlank()) {
+                val movFile = java.io.File("$stem.MOV")
+                val movFile2 = java.io.File("$stem.mov")
+                if ((movFile.exists() && movFile.canRead()) ||
+                    (movFile2.exists() && movFile2.canRead())) return true
+            }
+        }
+        return false
+    }
+
+/**
+ * Apple Live Photo exported as .livp (a renamed .zip containing IMG.JPG + IMG.MOV).
+ * Extracts the inner JPEG to a temp cache file so Coil can display it.
+ */
+val MediaImage.livpJpegCacheFile: java.io.File?
+    get() {
+        if (!name.endsWith(".livp", ignoreCase = true) &&
+            !path.endsWith(".livp", ignoreCase = true)) return null
+        if (path.isBlank()) return null
+        val src = java.io.File(path)
+        if (!src.exists() || !src.canRead()) return null
+        // Stable temp path derived from the source file path + last-modified stamp
+        val key = src.absolutePath.hashCode().toString() + "_" + src.lastModified()
+        return java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "livp_$key.jpg")
     }
 
 val MediaImage.isPanorama: Boolean

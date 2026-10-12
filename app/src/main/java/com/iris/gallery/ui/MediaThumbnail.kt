@@ -41,6 +41,7 @@ import com.iris.gallery.data.isMotionPhoto
 import com.iris.gallery.data.isPanorama
 import com.iris.gallery.data.isRaw
 import com.iris.gallery.data.isSvg
+import com.iris.gallery.data.livpJpegCacheFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -115,11 +116,27 @@ fun getThumbnailTargetSizePx(cellSizeDp: Float, density: Float = 2.5f): Int {
 private fun loadThumbnail(context: Context, image: MediaImage, targetSizePx: Int = 320): Bitmap? {
     val cacheKey = (image.id shl 16) xor (targetSizePx.toLong() and 0xFFFFL)
     ThumbnailCache.get(cacheKey)?.let { return it }
+
+    // For .livp (Apple Live Photo zip) files, make sure the inner JPEG has been
+    // extracted to a temp cache file before attempting thumbnail creation.
+    if (image.path.endsWith(".livp", ignoreCase = true)) {
+        val cached = image.livpJpegCacheFile
+        if (cached != null && (!cached.exists() || cached.length() == 0L)) {
+            // Trigger motion extraction which also writes the JPEG cache file.
+            runCatching { com.iris.gallery.decoder.MotionPhotoExtractor.detectMotionPhoto(context, image) }
+        }
+    }
+
     val bitmap = try {
         val size = Size(targetSizePx, targetSizePx)
+        // For .livp files, use the extracted cache JPEG if available.
+        val effectivePath = if (image.path.endsWith(".livp", ignoreCase = true)) {
+            val cached = image.livpJpegCacheFile
+            if (cached != null && cached.exists() && cached.length() > 0) cached.absolutePath else image.path
+        } else image.path
         val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
         if (isFile) {
-            val file = java.io.File(image.path)
+            val file = java.io.File(effectivePath)
             if (Build.VERSION.SDK_INT >= 29) {
                 if (image.isVideo) {
                     android.media.ThumbnailUtils.createVideoThumbnail(file, size, null)

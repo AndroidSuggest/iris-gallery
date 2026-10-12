@@ -7,9 +7,11 @@ import android.os.Build
 import android.provider.MediaStore
 import android.util.LruCache
 import com.iris.gallery.data.MediaImage
+import com.iris.gallery.data.livpJpegCacheFile
 import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
+import java.util.zip.ZipFile
 
 /**
  * Result of extracting the embedded motion video from a [MediaImage].
@@ -100,6 +102,15 @@ object MotionPhotoExtractor {
             image.sizeBytes > 0 -> image.sizeBytes
             else -> -1L
         }
+
+        // 0a) Apple Live Photo .livp (zip containing JPG + MOV)
+        extractLivpArchive(context, image, directFile)?.let { return it }
+
+        // 0b) Apple Live Photo: paired .MOV/.mov file beside the .JPG/.HEIC.
+        //    Apple Live Photos are stored as two separate files that share a
+        //    content identifier UUID. The .MOV sits in the same directory.
+        extractAppleLivePhoto(context, image, directFile)?.let { return it }
+
         if (fileLength <= 0) return null
 
         // 1) Read the tail (cheap, 64 KiB). Try Samsung SEF + quick "plain JPEG" reject.
@@ -117,6 +128,121 @@ object MotionPhotoExtractor {
 
         // 3) Generic fallback: JPEG with an MP4 trailer past the EOI (Nokia / others).
         return extractGenericMp4(context, image, openInput, fileLength, directFile)
+    }
+
+    // ------------------------------------------------------------------
+    // Path 0a: Apple Live Photo .livp (zip archive)
+    // ------------------------------------------------------------------
+
+    private fun extractLivpArchive(
+        context: Context,
+        image: MediaImage,
+        directFile: File?,
+    ): MotionVideo? {
+        // Only handle files whose extension is .livp (or .zip beside an image).
+        val name = image.name
+        if (!name.endsWith(".livp", ignoreCase = true) &&
+            !image.path.endsWith(".livp", ignoreCase = true)) return null
+        val src = directFile ?: return null
+        if (!src.exists() || !src.canRead()) return null
+
+        // Probe the first 4 bytes — must be a real ZIP ("PK\x03\x04").
+        val isZip = runCatching {
+            RandomAccessFile(src, "r").use { raf ->
+                val sig = ByteArray(4)
+                raf.readFully(sig)
+                sig[0].toInt() == 0x50 && sig[1].toInt() == 0x4B &&
+                    sig[2].toInt() == 0x03 && sig[3].toInt() == 0x04
+            }
+        }.getOrDefault(false)
+        if (!isZip) return null
+
+        // Stable temp file names derived from the source path + mtime stamp.
+        val movKey = src.absolutePath.hashCode().toString() + "_" + src.lastModified()
+        val movTmp = File(System.getProperty("java.io.tmpdir", "/tmp"), "livp_mov_$movKey.mov")
+        val livpJpeg: File? = image.livpJpegCacheFile
+
+        // Both files already extracted → return immediately without re-opening the zip.
+        if (movTmp.exists() && movTmp.length() > 0) {
+            return MotionVideo(Uri.fromFile(movTmp), "video/quicktime", movTmp.length())
+        }
+
+        return runCatching {
+            ZipFile(src).use { zip ->
+                // Collect entries up-front so we can iterate without holding the zip open.
+                var movEntryName: String? = null
+                var jpgEntryName: String? = null
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val lower = entry.name.lowercase()
+                    if (movEntryName == null && (lower.endsWith(".mov") || lower.endsWith(".mp4"))) {
+                        movEntryName = entry.name
+                    }
+                    if (jpgEntryName == null && (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".heic"))) {
+                        jpgEntryName = entry.name
+                    }
+                    if (movEntryName != null && jpgEntryName != null) break
+                }
+                if (movEntryName == null) return@use null
+
+                // Extract the JPEG first if missing, so the viewer can display it.
+                val jpegTarget = livpJpeg
+                val jpgName = jpgEntryName
+                if (jpegTarget != null && (!jpegTarget.exists() || jpegTarget.length() == 0L) && jpgName != null) {
+                    val jpgEntry = zip.getEntry(jpgName)
+                    if (jpgEntry != null) {
+                        zip.getInputStream(jpgEntry).use { input ->
+                            java.io.FileOutputStream(jpegTarget).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                }
+
+                // Extract the MOV entry to a temp file.
+                val movEntry = zip.getEntry(movEntryName)
+                if (movEntry != null) {
+                    zip.getInputStream(movEntry).use { input ->
+                        java.io.FileOutputStream(movTmp).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                }
+
+                if (movTmp.exists() && movTmp.length() > 0) {
+                    MotionVideo(Uri.fromFile(movTmp), "video/quicktime", movTmp.length())
+                } else null
+            }
+        }.getOrNull()
+    }
+
+    // ------------------------------------------------------------------
+    // Path 0: Apple Live Photo (paired .MOV file)
+    // ------------------------------------------------------------------
+
+    private fun extractAppleLivePhoto(
+        context: Context,
+        image: MediaImage,
+        directFile: File?,
+    ): MotionVideo? {
+        // Apple Live Photos store the still as .JPG/.HEIC and the video as .MOV
+        // in the same directory. The filename stem is shared (e.g. IMG_1234.JPG
+        // pairs with IMG_1234.MOV).
+        val path = image.path
+        if (path.isBlank()) return null
+        val stem = path.substringBeforeLast('.', "")
+        if (stem.isBlank()) return null
+        val movFile = File("$stem.MOV")
+        val movFile2 = File("$stem.mov")
+        val candidate = when {
+            movFile.exists() && movFile.canRead() -> movFile
+            movFile2.exists() && movFile2.canRead() -> movFile2
+            else -> return null
+        }
+        val len = candidate.length()
+        if (len <= 0) return null
+        return MotionVideo(Uri.fromFile(candidate), "video/quicktime", len)
     }
 
     // ------------------------------------------------------------------

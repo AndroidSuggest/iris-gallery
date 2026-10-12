@@ -155,6 +155,7 @@ import com.iris.gallery.data.isGif
 import com.iris.gallery.data.isRaw
 import com.iris.gallery.data.isMotionPhoto
 import com.iris.gallery.data.isPanorama
+import com.iris.gallery.data.livpJpegCacheFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -6406,8 +6407,26 @@ private fun ZoomablePhoto(
         cachedThumb?.let { BitmapPainter(it.asImageBitmap()) }
     }
 
-    val imageRequest: ImageRequest = remember(image.id, image.uri) {
-        val reqBuilder = ImageRequest.Builder(context).data(image.uri)
+    // For Apple Live Photo .livp (zip) files, the still JPEG lives inside the archive.
+    // Extract it to a temp cache file and use that URI for Coil so the image displays.
+    val livpJpeg = remember(image.id, image.path) { image.livpJpegCacheFile }
+    LaunchedEffect(image.id, image.path) {
+        if (livpJpeg != null && (!livpJpeg.exists() || livpJpeg.length() == 0L)) {
+            withContext(Dispatchers.IO) {
+                // Force motion extraction which also writes the JPEG cache file.
+                MotionPhotoExtractor.detectMotionPhoto(context, image)
+            }
+        }
+    }
+    val displayUri = remember(image.id, image.uri, livpJpeg?.length()) {
+        val cachedJpeg = livpJpeg
+        if (cachedJpeg != null && cachedJpeg.exists() && cachedJpeg.length() > 0) {
+            Uri.fromFile(cachedJpeg)
+        } else image.uri
+    }
+
+    val imageRequest: ImageRequest = remember(image.id, displayUri) {
+        val reqBuilder = ImageRequest.Builder(context).data(displayUri)
         if (image.isSvg) {
             val metrics = context.resources.displayMetrics
             val maxScreen = maxOf(metrics.widthPixels, metrics.heightPixels, 2560)
@@ -6752,28 +6771,112 @@ private fun ZoomablePhoto(
 
         // ---- Motion Photo overlays ----
         // In-place looping video player (mute + repeat). The still image acts as poster.
+        // Apply the same transform (scale/offset/rotate) as the still image so the video
+        // aligns exactly with it and can be zoomed/panned.
         if (isPlayingMotion && motionPlayer != null) {
-            AndroidView<PlayerView>(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        player = motionPlayer
-                    }
-                },
-                update = { view ->
-                    view.player = motionPlayer
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-            // Tap to stop and return to the still image.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures(onTap = { onPlayMotion() })
-                    }
-            )
+            // Compute displayed image rect so the video overlay matches it exactly.
+            val intrinsic = painter.intrinsicSize
+            val hasValidIntrinsic = intrinsic.isSpecified && intrinsic.width > 0f && intrinsic.height > 0f
+            val thumbIntrinsic = thumbPainter?.intrinsicSize
+            val hasThumbIntrinsic = thumbIntrinsic != null && thumbIntrinsic.isSpecified && thumbIntrinsic.width > 0f && thumbIntrinsic.height > 0f
+            val imgWidth = when {
+                hasValidIntrinsic -> intrinsic.width
+                hasThumbIntrinsic -> thumbIntrinsic!!.width
+                image.width > 0 -> image.width.toFloat()
+                else -> 1080f
+            }
+            val imgHeight = when {
+                hasValidIntrinsic -> intrinsic.height
+                hasThumbIntrinsic -> thumbIntrinsic!!.height
+                image.height > 0 -> image.height.toFloat()
+                else -> 1080f
+            }
+
+            if (imgWidth > 0f && imgHeight > 0f && containerSize.width > 0 && containerSize.height > 0) {
+                val imageAspect = imgWidth / imgHeight
+                val containerAspect = containerSize.width.toFloat() / containerSize.height.coerceAtLeast(1)
+                val fitW: Float
+                val fitH: Float
+                if (imageAspect > containerAspect) {
+                    fitW = containerSize.width.toFloat()
+                    fitH = fitW / imageAspect
+                } else {
+                    fitH = containerSize.height.toFloat()
+                    fitW = fitH * imageAspect
+                }
+                val motionScale = scaleAnim.value
+                val motionOffset = offsetAnim.value
+                val motionRotation = rotationAnim.value
+                val leftPx = (containerSize.width - fitW) / 2f
+                val topPx = (containerSize.height - fitH) / 2f
+                val wDp = with(androidx.compose.ui.platform.LocalDensity.current) { fitW.toDp() }
+                val hDp = with(androidx.compose.ui.platform.LocalDensity.current) { fitH.toDp() }
+                val lDp = with(androidx.compose.ui.platform.LocalDensity.current) { leftPx.toDp() }
+                val tDp = with(androidx.compose.ui.platform.LocalDensity.current) { topPx.toDp() }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = motionOffset.x
+                            translationY = motionOffset.y
+                            scaleX = motionScale
+                            scaleY = motionScale
+                            rotationZ = motionRotation
+                        }
+                        .pointerInput(image.id) {
+                            detectTapGestures(onTap = { onPlayMotion() })
+                        },
+                    contentAlignment = Alignment.TopStart,
+                ) {
+                    AndroidView<PlayerView>(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                useController = false
+                                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                player = motionPlayer
+                                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                findViewById<android.view.View>(androidx.media3.ui.R.id.exo_shutter)?.visibility = android.view.View.GONE
+                                // Don't capture touch events — let gestures pass through
+                                // to the Canvas below for zoom/pan.
+                                isClickable = false
+                                isFocusable = false
+                            }
+                        },
+                        update = { view ->
+                            view.player = motionPlayer
+                            view.resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        },
+                        modifier = Modifier
+                            .padding(start = lDp, top = tDp)
+                            .size(width = wDp, height = hDp),
+                    )
+                }
+            } else {
+                // Fallback: full-screen fit (prevents black screen before intrinsic is known)
+                AndroidView<PlayerView>(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = false
+                            resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            player = motionPlayer
+                            setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            findViewById<android.view.View>(androidx.media3.ui.R.id.exo_shutter)?.visibility = android.view.View.GONE
+                            isClickable = false
+                            isFocusable = false
+                        }
+                    },
+                    update = { view -> view.player = motionPlayer },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = { onPlayMotion() })
+                        }
+                )
+            }
         }
 
         // Extraction in progress indicator.
@@ -6790,7 +6893,8 @@ private fun ZoomablePhoto(
             }
         }
 
-        // Motion play button (bottom-end). Shown when a motion video is available and not playing.
+        // Motion play button. Positioned above the bottom control bar / filmstrip
+        // so it stays visible even when the viewer is not fullscreen.
         if (motionVideo != null && !isPlayingMotion && !motionExtracting && !image.isSvg && !image.isRaw) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -6801,7 +6905,8 @@ private fun ZoomablePhoto(
                     color = Color.Black.copy(alpha = 0.55f),
                     tonalElevation = 0.dp,
                     modifier = Modifier
-                        .padding(20.dp)
+                        .navigationBarsPadding()
+                        .padding(bottom = 140.dp, end = 20.dp)
                         .size(48.dp)
                         .pointerInput(Unit) {
                             detectTapGestures(onTap = { onPlayMotion() })
