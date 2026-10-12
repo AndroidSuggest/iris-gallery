@@ -1364,7 +1364,7 @@ private fun GalleryApp(
                         },
                         getAlbumDir = viewModel::getAlbumDirectory,
                         createAlbumDir = viewModel::createNewAlbumDirectory,
-                        onRefresh = { viewModel.refresh() },
+                        onRefresh = { viewModel.refresh(showLoading = true) },
                         onRenameMedia = { media, newName, callback ->
                             viewModel.renameMedia(media, newName) { updated ->
                                 if (updated != null) {
@@ -1390,6 +1390,10 @@ private fun GalleryApp(
                         initialViewUri = initialViewUri,
                         initialEditMode = initialEditMode,
                         initialOpenLatest = initialOpenLatest,
+                        onInvalidMedia = { ghost ->
+                            viewModel.markMediaDeleted(setOf(ghost.id), setOf(ghost.path))
+                            viewModel.purgeGhostMedia(ghost)
+                        },
                     )
                 }
 
@@ -1904,6 +1908,7 @@ private fun GalleryScaffold(
     initialViewUri: Uri? = null,
     initialEditMode: Boolean = false,
     initialOpenLatest: Boolean = false,
+    onInvalidMedia: ((MediaImage) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val visibleTabs = remember(settings.showPhotosTab, settings.showAlbumsTab, settings.showFavoritesTab, settings.showLibraryTab) {
@@ -2720,6 +2725,7 @@ private fun GalleryScaffold(
                     onToggleSelection = if (onPick == null) ::toggleSelection else null,
                     onSetSelection = if (onPick == null) ::setSelection else null,
                     onSetDateSelection = if (onPick == null) ::setDateSelection else null,
+                    onInvalidMedia = onInvalidMedia,
                   ) { if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedPhotos; selectedId = it.id } }
                   else if (fileSearchQuery.isNotBlank()) EmptyState(stringResource(R.string.empty_search_files, fileSearchQuery), padding)
                   else EmptyState(stringResource(R.string.empty_photos), padding)
@@ -3282,6 +3288,7 @@ private fun GalleryScaffold(
                     onToggleSelection = if (onPick == null) ::toggleSelection else null,
                     onSetSelection = if (onPick == null) ::setSelection else null,
                     onSetDateSelection = if (onPick == null) ::setDateSelection else null,
+                    onInvalidMedia = onInvalidMedia,
                 ) {
                     if (selectedIds.isNotEmpty()) toggleSelection(it.id) else if (onPick != null) onPick(it) else { viewerImages = displayedFavoritePhotos; selectedId = it.id }
                 }
@@ -4095,6 +4102,7 @@ private fun PhotoGrid(
     onToggleSelection: ((Long) -> Unit)? = null,
     onSetSelection: ((Long, Boolean) -> Unit)? = null,
     onSetDateSelection: ((List<Long>, Boolean) -> Unit)? = null,
+    onInvalidMedia: ((MediaImage) -> Unit)? = null,
     onOpen: (MediaImage) -> Unit,
 ) {
     val currentLocale = rememberAppLocale()
@@ -4501,6 +4509,7 @@ private fun PhotoGrid(
                         showVideoDuration = showVideoDuration,
                         showFormatBadge = showFormatBadge,
                         isFavorite = showFavoriteBadge && (image.id in favorites),
+                        onInvalidMedia = onInvalidMedia,
                     )
                     AnimatedVisibility(selected, enter = fadeIn(tween(120)) + scaleIn(tween(160)),
                         exit = fadeOut(tween(100)) + scaleOut(tween(120)),

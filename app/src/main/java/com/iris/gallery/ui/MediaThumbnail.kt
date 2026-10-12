@@ -271,6 +271,7 @@ fun MediaThumbnail(
     showVideoDuration: Boolean = true,
     showFormatBadge: Boolean = true,
     isFavorite: Boolean = false,
+    onInvalidMedia: ((MediaImage) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val cacheKey = remember(image.id, targetSizePx) { (image.id shl 16) xor (targetSizePx.toLong() and 0xFFFFL) }
@@ -284,7 +285,37 @@ fun MediaThumbnail(
     if (bitmap == null) {
         LaunchedEffect(cacheKey, image.uri) {
             val loaded = withContext(Dispatchers.IO) { loadThumbnail(context, image, targetSizePx) }
-            bitmap = loaded
+            if (loaded != null) {
+                bitmap = loaded
+            } else {
+                val isGhost = withContext(Dispatchers.IO) {
+                    val filePath = image.path
+                    if (filePath.isNotBlank()) {
+                        val file = java.io.File(filePath)
+                        if (!file.exists()) {
+                            if (image.id > 0) {
+                                val canOpen = runCatching {
+                                    context.contentResolver.openAssetFileDescriptor(image.uri, "r")?.use { true } ?: false
+                                }.getOrDefault(false)
+                                !canOpen
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    } else if (image.id > 0) {
+                        runCatching {
+                            context.contentResolver.openAssetFileDescriptor(image.uri, "r")?.use { false } ?: true
+                        }.getOrDefault(false)
+                    } else {
+                        false
+                    }
+                }
+                if (isGhost) {
+                    onInvalidMedia?.invoke(image)
+                }
+            }
         }
     }
 

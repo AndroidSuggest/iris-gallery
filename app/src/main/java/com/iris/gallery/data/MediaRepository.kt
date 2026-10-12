@@ -2,6 +2,7 @@ package com.iris.gallery.data
 
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.provider.MediaStore
 import android.os.Bundle
 import android.os.Environment
@@ -17,7 +18,8 @@ class MediaRepository(private val context: Context) {
     private val libraryPreferences = LibraryPreferences(context)
 
     companion object {
-        private const val VERIFIED_PATH_TTL_MS = 10 * 60 * 1_000L // 10 minutes
+        private const val VERIFIED_PATH_TTL_MS = 60 * 1_000L // 1 minute
+        private const val TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000L // 24 hours
     }
 
     private val inMemoryCache = java.util.concurrent.ConcurrentHashMap<Long, MediaImage>()
@@ -43,12 +45,8 @@ class MediaRepository(private val context: Context) {
                     isVideo, durationMs, mimeType, sizeBytes, orientation, title,
                     dateModified = dateModified, dateAdded = dateAdded)
             }
-            val now = System.currentTimeMillis()
             list.forEach { item ->
                 inMemoryCache[item.id] = item
-                if (item.path.isNotBlank()) {
-                    verifiedPathsCache[item.path] = now
-                }
             }
             list
         }
@@ -70,6 +68,19 @@ class MediaRepository(private val context: Context) {
         }
     }
 
+    fun isMarkedMovedOrDeleted(id: Long, path: String): Boolean {
+        val now = System.currentTimeMillis()
+        if (id > 0) {
+            val timestamp = recentMovedOrDeletedIds[id]
+            if (timestamp != null && now - timestamp < TOMBSTONE_TTL_MS) return true
+        }
+        if (path.isNotBlank()) {
+            val timestamp = recentMovedOrDeletedPaths[path]
+            if (timestamp != null && now - timestamp < TOMBSTONE_TTL_MS) return true
+        }
+        return false
+    }
+
     fun clearRecentMovedOrDeleted(ids: Set<Long>, paths: Set<String> = emptySet()) {
         ids.forEach { recentMovedOrDeletedIds.remove(it) }
         paths.forEach { recentMovedOrDeletedPaths.remove(it) }
@@ -77,7 +88,38 @@ class MediaRepository(private val context: Context) {
 
     fun clearVerifiedPathsCache() {
         verifiedPathsCache.clear()
-        inMemoryCache.clear()
+    }
+
+    fun purgeGhostMedia(id: Long, path: String, uri: Uri) {
+        val now = System.currentTimeMillis()
+        if (id > 0) {
+            recentMovedOrDeletedIds[id] = now
+            inMemoryCache.remove(id)
+        }
+        if (path.isNotBlank()) {
+            recentMovedOrDeletedPaths[path] = now
+            verifiedPathsCache.remove(path)
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
+        }
+        runCatching { context.contentResolver.delete(uri, null, null) }
+        if (id > 0) {
+            runCatching {
+                context.contentResolver.delete(
+                    MediaStore.Files.getContentUri("external"),
+                    "${MediaStore.MediaColumns._ID}=?",
+                    arrayOf(id.toString())
+                )
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                runCatching {
+                    context.contentResolver.delete(
+                        MediaStore.Files.getContentUri("external_primary"),
+                        "${MediaStore.MediaColumns._ID}=?",
+                        arrayOf(id.toString())
+                    )
+                }
+            }
+        }
     }
 
     private fun resolveDateTaken(
@@ -282,8 +324,8 @@ class MediaRepository(private val context: Context) {
 
     suspend fun loadImages(trashed: Boolean = false): List<MediaImage> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        recentMovedOrDeletedIds.entries.removeIf { now - it.value > 15_000 }
-        recentMovedOrDeletedPaths.entries.removeIf { now - it.value > 15_000 }
+        recentMovedOrDeletedIds.entries.removeIf { now - it.value > TOMBSTONE_TTL_MS }
+        recentMovedOrDeletedPaths.entries.removeIf { now - it.value > TOMBSTONE_TTL_MS }
 
         val collectionsToQuery = if (android.os.Build.VERSION.SDK_INT >= 29) {
             val names = runCatching { MediaStore.getExternalVolumeNames(context) }.getOrNull()?.filter { it.isNotBlank() }
@@ -404,42 +446,6 @@ class MediaRepository(private val context: Context) {
                             baseMediaUri
                         }
 
-                        var diskModifiedMs = 0L
-                        var diskSizeBytes = -1L
-                        if (!trashed && filePath.isNotBlank()) {
-                            if (recentMovedOrDeletedPaths.containsKey(filePath)) {
-                                continue
-                            }
-                            val isCachedValid = verifiedPathsCache[filePath]?.let { now - it < VERIFIED_PATH_TTL_MS } == true
-                            var exists = isCachedValid
-                            if (!exists) {
-                                val file = File(filePath)
-                                exists = file.exists()
-                                if (exists) {
-                                    diskModifiedMs = file.lastModified()
-                                    diskSizeBytes = file.length()
-                                    verifiedPathsCache[filePath] = now
-                                } else if (volName.isNotBlank() && volName != "external_primary") {
-                                    exists = runCatching {
-                                        context.contentResolver.openAssetFileDescriptor(mediaUri, "r")?.use { true } ?: false
-                                    }.getOrDefault(false)
-                                    if (exists) {
-                                        verifiedPathsCache[filePath] = now
-                                    }
-                                }
-                            }
-                            if (!exists) {
-                                verifiedPathsCache.remove(filePath)
-                                inMemoryCache.remove(mediaId)
-                                android.media.MediaScannerConnection.scanFile(context, arrayOf(filePath), null, null)
-                                if (android.os.Build.VERSION.SDK_INT <= 28) {
-                                    runCatching { context.contentResolver.delete(mediaUri, null, null) }
-                                }
-                                continue
-                            }
-                        }
-
-                        val existing = inMemoryCache[mediaId]
                         val cursorDateTaken = cursor.getLong(taken)
                         val cursorDateModified = cursor.getLong(modified) * 1_000L
                         val cursorDateAdded = cursor.getLong(added) * 1_000L
@@ -450,59 +456,12 @@ class MediaRepository(private val context: Context) {
                         val itemOrientation = cursor.getInt(orientation)
                         val itemTitle = libraryPreferences.getCustomTitle(mediaId) ?: cursor.getString(title).orEmpty()
 
-                        var effectiveModified = cursorDateModified
-                        var effectiveSize = itemSize
-                        if (diskModifiedMs > 0L) {
-                            val diskModSec = diskModifiedMs / 1000L
-                            val cursorModSec = cursor.getLong(modified)
-                            if (Math.abs(diskModSec - cursorModSec) > 1L || (diskSizeBytes >= 0L && diskSizeBytes != itemSize)) {
-                                effectiveModified = diskModifiedMs
-                                if (diskSizeBytes >= 0L) effectiveSize = diskSizeBytes
-                                inMemoryCache.remove(mediaId)
-                                android.media.MediaScannerConnection.scanFile(context, arrayOf(filePath), null, null)
-                            }
-                        }
-
-                        var takenTime = cursorDateTaken
-                        val takenSec = cursorDateTaken / 1000L
-                        val addedSec = cursorDateAdded / 1000L
-                        val modSec = effectiveModified / 1000L
-                        val existingTakenSec = (existing?.dateTaken ?: 0L) / 1000L
-                        val existingModSec = (existing?.dateModified ?: 0L) / 1000L
-
-                        val isSyntheticDateTaken = (takenSec == addedSec && addedSec > 0L) ||
-                                (takenSec == modSec && modSec > 0L) ||
-                                (existingTakenSec > 0L && existingTakenSec == existingModSec && effectiveModified != (existing?.dateModified ?: 0L))
-
-                        if (!isVid && (cursorDateTaken <= 0L || isSyntheticDateTaken)) {
-                            if (existing != null && existing.dateTaken > 0L && existing.dateTaken != existing.dateModified && existing.dateTaken != existing.dateAdded) {
-                                takenTime = existing.dateTaken
-                            } else {
-                                val exifTaken = extractExifDateTaken(context, mediaUri, filePath)
-                                if (exifTaken != null && exifTaken > 0L) {
-                                    takenTime = exifTaken
-                                }
-                            }
-                        }
-
-                        if (takenTime <= 0L || (isSyntheticDateTaken && takenTime == cursorDateTaken)) {
-                            takenTime = resolveDateTaken(
-                                cursorDateTaken = cursorDateTaken,
-                                cursorDateModified = effectiveModified,
-                                cursorDateAdded = cursorDateAdded,
-                                diskLastModified = diskModifiedMs,
-                                existingDateTaken = existing?.dateTaken ?: 0L,
-                                existingDateModified = existing?.dateModified ?: 0L
-                            )
-                        }
-
+                        val existing = inMemoryCache[mediaId]
                         if (!trashed && existing != null &&
                             existing.name == displayName &&
                             existing.path == filePath &&
-                            existing.dateTaken == takenTime &&
-                            existing.dateModified == effectiveModified &&
-                            existing.dateAdded == cursorDateAdded &&
-                            existing.sizeBytes == effectiveSize &&
+                            existing.dateModified == cursorDateModified &&
+                            existing.sizeBytes == itemSize &&
                             existing.orientation == itemOrientation &&
                             existing.width == itemWidth &&
                             existing.height == itemHeight &&
@@ -511,6 +470,80 @@ class MediaRepository(private val context: Context) {
                         ) {
                             add(existing)
                             continue
+                        }
+
+                        var diskModifiedMs = 0L
+                        var diskSizeBytes = -1L
+                        if (!trashed && filePath.isNotBlank()) {
+                            val file = File(filePath)
+                            var exists = file.exists()
+                            if (exists) {
+                                diskModifiedMs = file.lastModified()
+                                diskSizeBytes = file.length()
+                            } else if (volName.isNotBlank() && volName != "external_primary") {
+                                exists = runCatching {
+                                    context.contentResolver.openAssetFileDescriptor(mediaUri, "r")?.use { true } ?: false
+                                }.getOrDefault(false)
+                            }
+                            if (!exists) {
+                                inMemoryCache.remove(mediaId)
+                                recentMovedOrDeletedIds[mediaId] = now
+                                recentMovedOrDeletedPaths[filePath] = now
+                                android.media.MediaScannerConnection.scanFile(context, arrayOf(filePath), null, null)
+                                runCatching { context.contentResolver.delete(mediaUri, null, null) }
+                                runCatching {
+                                    context.contentResolver.delete(
+                                        MediaStore.Files.getContentUri("external"),
+                                        "${MediaStore.MediaColumns._ID}=?",
+                                        arrayOf(mediaId.toString())
+                                    )
+                                }
+                                if (android.os.Build.VERSION.SDK_INT >= 29 && volName.isNotBlank() && volName != "external") {
+                                    runCatching {
+                                        context.contentResolver.delete(
+                                            MediaStore.Files.getContentUri(volName),
+                                            "${MediaStore.MediaColumns._ID}=?",
+                                            arrayOf(mediaId.toString())
+                                        )
+                                    }
+                                }
+                                continue
+                            }
+                        }
+
+                        var effectiveModified = cursorDateModified
+                        var effectiveSize = itemSize
+                        if (diskModifiedMs > 0L) {
+                            val diskModSec = diskModifiedMs / 1000L
+                            val cursorModSec = cursor.getLong(modified)
+                            if (Math.abs(diskModSec - cursorModSec) > 1L || (diskSizeBytes >= 0L && diskSizeBytes != itemSize)) {
+                                effectiveModified = diskModifiedMs
+                                if (diskSizeBytes >= 0L) effectiveSize = diskSizeBytes
+                            }
+                        }
+
+                        var takenTime = cursorDateTaken
+                        val takenSec = cursorDateTaken / 1000L
+                        val addedSec = cursorDateAdded / 1000L
+                        val modSec = effectiveModified / 1000L
+
+                        val isSyntheticDateTaken = (takenSec == addedSec && addedSec > 0L) ||
+                                (takenSec == modSec && modSec > 0L)
+
+                        if (!isVid && (cursorDateTaken <= 0L || isSyntheticDateTaken)) {
+                            val exifTaken = extractExifDateTaken(context, mediaUri, filePath)
+                            if (exifTaken != null && exifTaken > 0L) {
+                                takenTime = exifTaken
+                            }
+                        }
+
+                        if (takenTime <= 0L || (isSyntheticDateTaken && takenTime == cursorDateTaken)) {
+                            takenTime = resolveDateTaken(
+                                cursorDateTaken = cursorDateTaken,
+                                cursorDateModified = effectiveModified,
+                                cursorDateAdded = cursorDateAdded,
+                                diskLastModified = diskModifiedMs
+                            )
                         }
 
                         val itemBucketId = if (trashed) -2L else cursor.getLong(bucketId)

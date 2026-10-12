@@ -294,21 +294,27 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         refresh(showLoading = false)
     }
 
+    fun purgeGhostMedia(image: MediaImage) {
+        repository.purgeGhostMedia(image.id, image.path, image.uri)
+        com.iris.gallery.ui.ThumbnailCache.remove(image.id)
+    }
+
     private var refreshJob: Job? = null
 
-    fun refresh(showLoading: Boolean = true) {
-        if (refreshJob?.isActive == true) {
-            if (showLoading && !_uiState.value.loading) {
-                _uiState.update { it.copy(loading = true) }
-            }
-            return
+    fun refresh(showLoading: Boolean = true, forceClearCache: Boolean = false) {
+        val current = refreshJob
+        if (current?.isActive == true) {
+            current.cancel()
+        }
+        if (forceClearCache) {
+            repository.clearVerifiedPathsCache()
         }
         refreshJob = viewModelScope.launch {
             try {
-                kotlinx.coroutines.withTimeout(15_000) {
+                kotlinx.coroutines.withTimeout(20_000) {
                     vaultRepository.loadVaultItems()
                     val internalTrash = trashRepository.loadTrashItems()
-                    val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30 && settingsPreferences.state.value.useSystemTrash) {
                         try {
                             repository.loadImages(trashed = true)
                         } catch (e: Exception) {
@@ -323,11 +329,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     try {
                         val loaded = repository.loadImages()
                         val loadedPaths = loaded.mapTo(HashSet(loaded.size)) { it.path }
+                        val loadedIds = loaded.mapTo(HashSet(loaded.size)) { it.id }
                         val currentPending = _uiState.value.images.filter { item ->
-                            item.path.isNotBlank() && item.path !in loadedPaths && java.io.File(item.path).exists()
+                            item.path.isNotBlank() &&
+                            item.path !in loadedPaths &&
+                            item.id !in loadedIds &&
+                            !repository.isMarkedMovedOrDeleted(item.id, item.path) &&
+                            java.io.File(item.path).exists()
                         }
                         val combined = if (currentPending.isNotEmpty()) {
-                            (loaded + currentPending).distinctBy { it.path }.sortedWith(
+                            (loaded + currentPending).distinctBy { it.id }.sortedWith(
                                 compareByDescending<MediaImage> { it.dateTaken }
                                     .thenByDescending { it.dateModified }
                                     .thenByDescending { it.dateAdded }
@@ -340,6 +351,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                         if (_duplicateState.value.hasScanned) _duplicateState.value = DuplicateScanState()
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
+                        android.util.Log.e("GalleryViewModel", "refresh loadImages failed", e)
                         if (_uiState.value.images.isEmpty()) {
                             _uiState.update { state -> state.copy(loading = false, error = e.message ?: "Could not load photos") }
                         } else {
@@ -349,6 +361,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e("GalleryViewModel", "refresh overall failed", e)
                 _uiState.update { it.copy(loading = false) }
             } finally {
                 _uiState.update { it.copy(loading = false) }
