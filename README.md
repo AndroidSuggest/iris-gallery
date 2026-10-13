@@ -13,7 +13,11 @@
   <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/MohamadOday/iris-gallery"><img src="https://img.shields.io/badge/Obtainium-Add%20App-4080FF?logo=android&logoColor=white" alt="Add to Obtainium" /></a>
   <a href="https://f-droid.org/packages/com.iris.gallery/"><img src="https://img.shields.io/badge/F--Droid-Available-3DDC84?logo=f-droid&logoColor=white" alt="F-Droid" /></a>
   <a href="https://apt.izzysoft.de/fdroid/index/apk/com.iris.gallery"><img src="https://img.shields.io/badge/IzzyOnDroid-Repository-009688?logo=f-droid&logoColor=white" alt="IzzyOnDroid" /></a>
-  <img src="https://img.shields.io/badge/Android-8.0%2B%20(API%2026%2B)-green.svg" alt="Android 8.0+" />
+ <a href="https://github.com/MohamadOday/iris-
+          gallery/stargazers"><img src="https://img.shields.
+          io/github/stars/MohamadOday/iris-
+          gallery?style=flat&color=gold" alt="Stars" /></a>
+ <img src="https://img.shields.io/badge/Android-8.0%2B%20(API%2026%2B)-green.svg" alt="Android 8.0+" />
   <img src="https://img.shields.io/badge/Network-None%20(100%25%20Offline)-brightgreen.svg" alt="100% Offline" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-orange.svg" alt="License" /></a>
 </p>
