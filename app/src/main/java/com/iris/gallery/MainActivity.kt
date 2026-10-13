@@ -769,9 +769,16 @@ private fun GalleryApp(
 
     if (!permitted) {
         if (standaloneEditorMedia != null) {
-            EditorScreen(standaloneEditorMedia!!, onClose = { standaloneEditorMedia = null }, onSaved = { saved ->
+            EditorScreen(standaloneEditorMedia!!, onClose = { standaloneEditorMedia = null }, onSaved = { saved, overwritten ->
                 if (saved) standaloneEditorMedia = null
-                Toast.makeText(context, if (saved) context.getString(R.string.toast_edited_saved) else context.getString(R.string.toast_edited_failed), Toast.LENGTH_SHORT).show()
+                val msg = if (!saved) {
+                    context.getString(R.string.toast_edited_failed)
+                } else if (overwritten) {
+                    context.getString(R.string.toast_edited_overwritten)
+                } else {
+                    context.getString(R.string.toast_edited_saved)
+                }
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             })
         } else if (standaloneExternalMedia != null) {
             PhotoViewer(
@@ -3809,10 +3816,16 @@ private fun GalleryScaffold(
         )
     ) {
         editorImage?.let { image ->
-            EditorScreen(image, onClose = { editorImage = null }, onSaved = { saved ->
+            EditorScreen(image, onClose = { editorImage = null }, onSaved = { saved, overwritten ->
                 if (saved) editorImage = null
-                Toast.makeText(context, if (saved) context.getString(R.string.toast_edited_saved) else context.getString(R.string.toast_edited_failed),
-                    Toast.LENGTH_SHORT).show()
+                val msg = if (!saved) {
+                    context.getString(R.string.toast_edited_failed)
+                } else if (overwritten) {
+                    context.getString(R.string.toast_edited_overwritten)
+                } else {
+                    context.getString(R.string.toast_edited_saved)
+                }
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             })
         }
     }
@@ -6414,7 +6427,7 @@ private fun ZoomablePhoto(
 
     // For Apple Live Photo .livp (zip) files, the still JPEG lives inside the archive.
     // Extract it to a temp cache file and use that URI for Coil so the image displays.
-    val livpJpeg = remember(image.id, image.path) { image.livpJpegCacheFile }
+    val livpJpeg = remember(image.id, image.path) { image.livpJpegCacheFile(context) }
     LaunchedEffect(image.id, image.path) {
         if (livpJpeg != null && (!livpJpeg.exists() || livpJpeg.length() == 0L)) {
             withContext(Dispatchers.IO) {

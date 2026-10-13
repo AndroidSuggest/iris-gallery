@@ -173,6 +173,7 @@ data class SettingsState(
     val useSystemTrash: Boolean = false,
     val videoMuted: Boolean = false,
     val preferredEditor: PreferredEditor = PreferredEditor.ALWAYS_ASK,
+    val editorOverwriteOriginal: Boolean = false,
     val language: String = "",
     val firstLaunchLanguageSetupDone: Boolean = false,
     val memoriesNotificationEnabled: Boolean = true,
@@ -258,6 +259,7 @@ class SettingsPreferences(context: Context) {
     fun setUseSystemTrash(enabled: Boolean) = update { copy(useSystemTrash = enabled) }
     fun setVideoMuted(muted: Boolean) = update { copy(videoMuted = muted) }
     fun setPreferredEditor(editor: PreferredEditor) = update { copy(preferredEditor = editor) }
+    fun setEditorOverwriteOriginal(enabled: Boolean) = update { copy(editorOverwriteOriginal = enabled) }
     fun setMemoriesNotificationEnabled(enabled: Boolean) = update { copy(memoriesNotificationEnabled = enabled) }
     fun setMemoriesNotificationTime(hour: Int, minute: Int) = update { copy(memoriesNotificationHour = hour, memoriesNotificationMinute = minute) }
     fun setDismissedMemoriesTip(dismissed: Boolean) = update { copy(dismissedMemoriesTip = dismissed) }
@@ -359,6 +361,7 @@ class SettingsPreferences(context: Context) {
             useSystemTrash = prefs.getBoolean("use_system_trash", false),
             videoMuted = prefs.getBoolean("video_muted", false),
             preferredEditor = runCatching { PreferredEditor.valueOf(prefs.getString("preferred_editor", null).orEmpty()) }.getOrDefault(PreferredEditor.ALWAYS_ASK),
+            editorOverwriteOriginal = prefs.getBoolean("editor_overwrite_original", false),
             language = prefs.getString("app_language", "").orEmpty(),
             firstLaunchLanguageSetupDone = prefs.getBoolean("first_launch_lang_done", false),
             memoriesNotificationEnabled = prefs.getBoolean("memories_notification_enabled", true),
@@ -420,6 +423,7 @@ class SettingsPreferences(context: Context) {
             .putBoolean("use_system_trash", state.useSystemTrash)
             .putBoolean("video_muted", state.videoMuted)
             .putString("preferred_editor", state.preferredEditor.name)
+            .putBoolean("editor_overwrite_original", state.editorOverwriteOriginal)
             .putString("app_language", state.language)
             .putBoolean("first_launch_lang_done", state.firstLaunchLanguageSetupDone)
             .putBoolean("memories_notification_enabled", state.memoriesNotificationEnabled)

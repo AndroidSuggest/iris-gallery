@@ -159,8 +159,8 @@ object MotionPhotoExtractor {
 
         // Stable temp file names derived from the source path + mtime stamp.
         val movKey = src.absolutePath.hashCode().toString() + "_" + src.lastModified()
-        val movTmp = File(System.getProperty("java.io.tmpdir", "/tmp"), "livp_mov_$movKey.mov")
-        val livpJpeg: File? = image.livpJpegCacheFile
+        val movTmp = File(context.cacheDir, "livp_mov_$movKey.mov")
+        val livpJpeg: File? = image.livpJpegCacheFile(context)
 
         // Both files already extracted → return immediately without re-opening the zip.
         if (movTmp.exists() && movTmp.length() > 0) {

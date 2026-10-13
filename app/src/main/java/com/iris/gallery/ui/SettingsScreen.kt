@@ -1505,6 +1505,15 @@ fun SettingsScreen(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.settings_editor_overwrite_title),
+                        subtitle = stringResource(R.string.settings_editor_overwrite_desc),
+                        checked = settings.editorOverwriteOriginal,
+                        onCheckedChange = { preferences.setEditorOverwriteOriginal(it) }
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

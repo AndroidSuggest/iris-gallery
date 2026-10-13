@@ -814,4 +814,10 @@
     <string name="settings_multi_stage_zoom_title">Multi-stage zoom</string>
     <string name="settings_multi_stage_zoom_desc">Double-tap cycles between Fit, Fill, and 1:1 original pixel size</string>
     <string name="format_svg">SVG</string>
+    <string name="action_overwrite">Overwrite</string>
+    <string name="settings_editor_overwrite_title">Overwrite original image</string>
+    <string name="settings_editor_overwrite_desc">Replace original file when saving edits instead of creating a copy</string>
+    <string name="dialog_overwrite_original_title">Overwrite original</string>
+    <string name="dialog_overwrite_original_desc">Replace original file instead of saving a copy</string>
+    <string name="toast_edited_overwritten">Original image replaced</string>
 </resources>

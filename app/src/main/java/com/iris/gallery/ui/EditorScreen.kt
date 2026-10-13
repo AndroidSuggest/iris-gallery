@@ -1,9 +1,17 @@
 package com.iris.gallery.ui
 
+import android.app.Activity
+import android.app.RecoverableSecurityException
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import com.iris.gallery.data.LibraryPreferences
+import com.iris.gallery.data.SettingsPreferences
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -17,6 +25,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.compose.BackHandler
@@ -73,6 +82,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -157,10 +167,49 @@ enum class ExportFormat(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
+fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolean, overwritten: Boolean) -> Unit) {
     val context = LocalContext.current
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val scope = rememberCoroutineScope()
+    val settingsPrefs = remember { SettingsPreferences(context) }
+    var overwriteOriginal by remember(image.id) {
+        mutableStateOf(settingsPrefs.state.value.editorOverwriteOriginal)
+    }
+    var saving by remember { mutableStateOf(false) }
+    var pendingOverwriteBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingOverwriteFormat by remember { mutableStateOf<ExportFormat?>(null) }
+    var pendingCachedTags by remember { mutableStateOf<Map<String, String>?>(null) }
+
+    val writePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val bytes = pendingOverwriteBytes
+            val fmt = pendingOverwriteFormat ?: ExportFormat.JPEG
+            val tags = pendingCachedTags ?: emptyMap()
+            pendingOverwriteBytes = null
+            pendingOverwriteFormat = null
+            pendingCachedTags = null
+            if (bytes != null) {
+                scope.launch {
+                    val success = runCatching {
+                        performOverwriteWrite(context, image, bytes, fmt, tags)
+                    }.getOrDefault(false)
+                    saving = false
+                    onSaved(success, true)
+                }
+            } else {
+                saving = false
+            }
+        } else {
+            pendingOverwriteBytes = null
+            pendingOverwriteFormat = null
+            pendingCachedTags = null
+            saving = false
+            Toast.makeText(context, R.string.action_cancel, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val rawPreview by produceState<Bitmap?>(null, image.id) { value = loadPreview(context, image) }
     var editorView by remember { mutableStateOf<EditorCanvasView?>(null) }
 
@@ -211,7 +260,6 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
         }
     }
     var selectedExportFormat by remember(image.id) { mutableStateOf(originalExportFormat) }
-    var saving by remember { mutableStateOf(false) }
 
     val activeTool = when (category) {
         EditorCategory.TRANSFORM -> EditorTool.CROP
@@ -312,7 +360,7 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
                         ) {
                             Text(
                                 if (saving) stringResource(R.string.action_saving)
-                                else stringResource(R.string.action_save_as),
+                                else stringResource(R.string.action_save),
                                 style = MaterialTheme.typography.labelLarge,
                                 maxLines = 1
                             )
@@ -598,6 +646,13 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
         SaveAsDialog(
             selectedFormat = selectedExportFormat,
             originalFormat = originalExportFormat,
+            overwriteOriginal = overwriteOriginal,
+            onToggleOverwrite = {
+                overwriteOriginal = it
+                if (it) {
+                    selectedExportFormat = originalExportFormat
+                }
+            },
             onSelectFormat = { selectedExportFormat = it },
             onDismiss = { if (!saving) showSaveAsDialog = false },
             onConfirm = {
@@ -606,25 +661,90 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
                 val crop = RectF(session.crop)
                 val strokes = session.strokes.map { it.copy(points = it.points.toMutableList()) }
                 val textOverlays = session.textOverlays.map { it.copy() }
-                val format = selectedExportFormat
+                val shouldOverwrite = overwriteOriginal
+                val format = if (shouldOverwrite) originalExportFormat else selectedExportFormat
                 saving = true
                 scope.launch {
-                    val saved = runCatching {
-                        saveEditedCopy(
-                            context, image, rotation, flipHorizontal, flipVertical,
-                            straightenAngle = straightenAngle,
-                            brightness = brightness, saturation = saturation, contrast = contrast, warmth = warmth,
-                            crop = crop,
-                            requestedWidth = if (isCustomResized) resizeWidth.toIntOrNull() else null,
-                            requestedHeight = if (isCustomResized) resizeHeight.toIntOrNull() else null,
-                            strokes = strokes,
-                            textOverlays = textOverlays,
-                            targetMaxBytes = if (isCustomResized) targetMaxBytes else null,
-                            format = format
-                        )
-                    }.isSuccess
-                    saving = false
-                    onSaved(saved)
+                    if (shouldOverwrite) {
+                        val tags = readExifTags(context, image)
+                        val bytes = runCatching {
+                            renderEditedBitmapToBytes(
+                                context, image, rotation, flipHorizontal, flipVertical,
+                                straightenAngle = straightenAngle,
+                                brightness = brightness, saturation = saturation, contrast = contrast, warmth = warmth,
+                                crop = crop,
+                                requestedWidth = if (isCustomResized) resizeWidth.toIntOrNull() else null,
+                                requestedHeight = if (isCustomResized) resizeHeight.toIntOrNull() else null,
+                                strokes = strokes,
+                                textOverlays = textOverlays,
+                                targetMaxBytes = if (isCustomResized) targetMaxBytes else null,
+                                format = format
+                            )
+                        }.getOrNull()
+
+                        if (bytes == null) {
+                            saving = false
+                            onSaved(false, true)
+                            return@launch
+                        }
+
+                        try {
+                            val success = performOverwriteWrite(context, image, bytes, format, tags)
+                            saving = false
+                            onSaved(success, true)
+                        } catch (e: SecurityException) {
+                            if (Build.VERSION.SDK_INT >= 30) {
+                                val canonicalUri = canonicalMediaUri(context, image)
+                                val writeReq = runCatching {
+                                    MediaStore.createWriteRequest(context.contentResolver, listOf(canonicalUri))
+                                }.getOrNull()
+
+                                if (writeReq != null) {
+                                    pendingOverwriteBytes = bytes
+                                    pendingOverwriteFormat = format
+                                    pendingCachedTags = tags
+                                    writePermissionLauncher.launch(
+                                        IntentSenderRequest.Builder(writeReq.intentSender).build()
+                                    )
+                                } else {
+                                    saving = false
+                                    onSaved(false, true)
+                                }
+                            } else {
+                                saving = false
+                                onSaved(false, true)
+                            }
+                        } catch (e: Exception) {
+                            if (Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException) {
+                                pendingOverwriteBytes = bytes
+                                pendingOverwriteFormat = format
+                                pendingCachedTags = tags
+                                writePermissionLauncher.launch(
+                                    IntentSenderRequest.Builder(e.userAction.actionIntent.intentSender).build()
+                                )
+                            } else {
+                                saving = false
+                                onSaved(false, true)
+                            }
+                        }
+                    } else {
+                        val saved = runCatching {
+                            saveEditedCopy(
+                                context, image, rotation, flipHorizontal, flipVertical,
+                                straightenAngle = straightenAngle,
+                                brightness = brightness, saturation = saturation, contrast = contrast, warmth = warmth,
+                                crop = crop,
+                                requestedWidth = if (isCustomResized) resizeWidth.toIntOrNull() else null,
+                                requestedHeight = if (isCustomResized) resizeHeight.toIntOrNull() else null,
+                                strokes = strokes,
+                                textOverlays = textOverlays,
+                                targetMaxBytes = if (isCustomResized) targetMaxBytes else null,
+                                format = format
+                            )
+                        }.isSuccess
+                        saving = false
+                        onSaved(saved, false)
+                    }
                 }
             }
         )
@@ -635,6 +755,8 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (Boolean) -> U
 private fun SaveAsDialog(
     selectedFormat: ExportFormat,
     originalFormat: ExportFormat,
+    overwriteOriginal: Boolean,
+    onToggleOverwrite: (Boolean) -> Unit,
     onSelectFormat: (ExportFormat) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
@@ -643,14 +765,53 @@ private fun SaveAsDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.export_format_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (overwriteOriginal)
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggleOverwrite(!overwriteOriginal) }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.dialog_overwrite_original_title),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = stringResource(R.string.dialog_overwrite_original_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(
+                            checked = overwriteOriginal,
+                            onCheckedChange = onToggleOverwrite
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
                 Text(
                     text = stringResource(R.string.format_original_subtitle, originalFormat.name),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 ExportFormat.values().forEach { format ->
-                    val isSelected = selectedFormat == format
+                    val isSelected = if (overwriteOriginal) format == originalFormat else selectedFormat == format
                     val desc = when (format) {
                         ExportFormat.JPEG -> stringResource(R.string.format_jpeg_desc)
                         ExportFormat.PNG -> stringResource(R.string.format_png_desc)
@@ -658,7 +819,8 @@ private fun SaveAsDialog(
                     }
                     Surface(
                         selected = isSelected,
-                        onClick = { onSelectFormat(format) },
+                        onClick = { if (!overwriteOriginal) onSelectFormat(format) },
+                        enabled = !overwriteOriginal,
                         shape = RoundedCornerShape(12.dp),
                         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                         modifier = Modifier.fillMaxWidth()
@@ -672,7 +834,8 @@ private fun SaveAsDialog(
                         ) {
                             RadioButton(
                                 selected = isSelected,
-                                onClick = { onSelectFormat(format) }
+                                onClick = { if (!overwriteOriginal) onSelectFormat(format) },
+                                enabled = !overwriteOriginal
                             )
                             Column(Modifier.weight(1f)) {
                                 Row(
@@ -712,7 +875,10 @@ private fun SaveAsDialog(
         },
         confirmButton = {
             Button(onClick = onConfirm) {
-                Text(stringResource(R.string.action_save))
+                Text(
+                    if (overwriteOriginal) stringResource(R.string.action_overwrite)
+                    else stringResource(R.string.action_save_copy)
+                )
             }
         },
         dismissButton = {
@@ -1847,7 +2013,122 @@ private suspend fun loadPreview(context: Context, image: MediaImage): Bitmap? = 
     } else null
 }
 
-private suspend fun saveEditedCopy(
+private val EXIF_TAGS_TO_PRESERVE = listOf(
+    ExifInterface.TAG_MAKE,
+    ExifInterface.TAG_MODEL,
+    ExifInterface.TAG_LENS_MAKE,
+    ExifInterface.TAG_LENS_MODEL,
+    ExifInterface.TAG_F_NUMBER,
+    ExifInterface.TAG_APERTURE_VALUE,
+    ExifInterface.TAG_EXPOSURE_TIME,
+    ExifInterface.TAG_SHUTTER_SPEED_VALUE,
+    ExifInterface.TAG_ISO_SPEED_RATINGS,
+    ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
+    ExifInterface.TAG_FOCAL_LENGTH,
+    ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+    ExifInterface.TAG_FLASH,
+    ExifInterface.TAG_WHITE_BALANCE,
+    ExifInterface.TAG_SCENE_CAPTURE_TYPE,
+    ExifInterface.TAG_DATETIME_ORIGINAL,
+    ExifInterface.TAG_DATETIME_DIGITIZED,
+    ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
+    ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
+    ExifInterface.TAG_IMAGE_DESCRIPTION,
+    ExifInterface.TAG_USER_COMMENT,
+    ExifInterface.TAG_ARTIST,
+    ExifInterface.TAG_COPYRIGHT,
+    "DocumentName",
+    "XPTitle",
+    "XPComment",
+    ExifInterface.TAG_GPS_LATITUDE,
+    ExifInterface.TAG_GPS_LATITUDE_REF,
+    ExifInterface.TAG_GPS_LONGITUDE,
+    ExifInterface.TAG_GPS_LONGITUDE_REF,
+    ExifInterface.TAG_GPS_ALTITUDE,
+    ExifInterface.TAG_GPS_ALTITUDE_REF,
+    ExifInterface.TAG_GPS_TIMESTAMP,
+    ExifInterface.TAG_GPS_DATESTAMP,
+    ExifInterface.TAG_GPS_PROCESSING_METHOD,
+    ExifInterface.TAG_IMAGE_UNIQUE_ID
+)
+
+private fun canonicalMediaUri(context: Context, item: MediaImage): Uri {
+    if (item.id > 0) {
+        val vol = if (Build.VERSION.SDK_INT >= 29) {
+            if (item.path.startsWith("/storage/")) {
+                val parts = item.path.split('/')
+                if (parts.size > 2 && parts[2] != "emulated" && parts[2] != "self") {
+                    parts[2]
+                } else "external"
+            } else "external"
+        } else "external"
+        val baseTable = if (Build.VERSION.SDK_INT >= 29) MediaStore.Images.Media.getContentUri(vol)
+        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        return ContentUris.withAppendedId(baseTable, item.id)
+    }
+    val uriStr = item.uri.toString()
+    if (uriStr.startsWith("content://media/")) {
+        return item.uri.buildUpon().clearQuery().build()
+    }
+    return item.uri
+}
+
+private fun readExifTags(context: Context, sourceImage: MediaImage): Map<String, String> {
+    return runCatching {
+        val srcExif = if (sourceImage.path.isNotBlank() && File(sourceImage.path).exists()) {
+            ExifInterface(sourceImage.path)
+        } else {
+            context.contentResolver.openInputStream(sourceImage.uri)?.use {
+                ExifInterface(it)
+            }
+        } ?: return emptyMap()
+
+        val map = mutableMapOf<String, String>()
+        for (tag in EXIF_TAGS_TO_PRESERVE) {
+            val value = srcExif.getAttribute(tag)
+            if (value != null) {
+                map[tag] = value
+            }
+        }
+        val effectiveTitle = sourceImage.title.takeIf { it.isNotBlank() && it != sourceImage.name && it != sourceImage.name.substringBeforeLast('.') }
+        if (effectiveTitle != null) {
+            map["DocumentName"] = effectiveTitle
+            map["XPTitle"] = effectiveTitle
+        }
+        map
+    }.getOrDefault(emptyMap())
+}
+
+private fun applyExifTags(dstExif: ExifInterface, tags: Map<String, String>) {
+    for ((tag, value) in tags) {
+        dstExif.setAttribute(tag, value)
+    }
+    dstExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+    dstExif.setAttribute(ExifInterface.TAG_SOFTWARE, "Iris Gallery")
+}
+
+private fun applyExifToFile(file: File, tags: Map<String, String>) {
+    if (tags.isEmpty() || !file.exists()) return
+    runCatching {
+        val exif = ExifInterface(file)
+        applyExifTags(exif, tags)
+        exif.saveAttributes()
+    }
+}
+
+private fun copyExifMetadata(context: Context, sourceImage: MediaImage, destUri: Uri) {
+    runCatching {
+        val tags = readExifTags(context, sourceImage)
+        if (tags.isEmpty()) return
+        context.contentResolver.openFileDescriptor(destUri, "rw")?.use { pfd ->
+            val dstExif = ExifInterface(pfd.fileDescriptor)
+            applyExifTags(dstExif, tags)
+            dstExif.saveAttributes()
+        }
+    }
+}
+
+private suspend fun renderEditedBitmapToBytes(
     context: Context,
     image: MediaImage,
     rotation: Int,
@@ -1865,7 +2146,7 @@ private suspend fun saveEditedCopy(
     textOverlays: List<TextOverlay>,
     targetMaxBytes: Long? = null,
     format: ExportFormat = ExportFormat.JPEG
-) = withContext(Dispatchers.IO) {
+): ByteArray = withContext(Dispatchers.IO) {
     val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
     val rawSource: Bitmap = runCatching {
         if (Build.VERSION.SDK_INT >= 28) {
@@ -1964,6 +2245,89 @@ private suspend fun saveEditedCopy(
     val resized = if (width != adjusted.width || height != adjusted.height) Bitmap.createScaledBitmap(adjusted, width, height, true) else adjusted
     renderBrushes(resized, strokes, crop)
     renderTextOverlays(resized, textOverlays, crop)
+
+    val bos = java.io.ByteArrayOutputStream()
+    if (targetMaxBytes != null && targetMaxBytes > 0) {
+        var quality = format.defaultQuality
+        var fits = false
+        if (format != ExportFormat.PNG) {
+            while (!fits && quality >= 25) {
+                bos.reset()
+                resized.compress(format.compressFormat, quality, bos)
+                if (bos.size() <= targetMaxBytes) {
+                    fits = true
+                    break
+                }
+                quality -= 10
+            }
+        }
+        if (!fits) {
+            var scale = 0.85f
+            while (!fits && scale >= 0.15f) {
+                val sw = (resized.width * scale).toInt().coerceAtLeast(64)
+                val sh = (resized.height * scale).toInt().coerceAtLeast(64)
+                val scaled = Bitmap.createScaledBitmap(resized, sw, sh, true)
+                quality = format.defaultQuality
+                if (format == ExportFormat.PNG) {
+                    bos.reset()
+                    scaled.compress(format.compressFormat, 100, bos)
+                    if (bos.size() <= targetMaxBytes) {
+                        fits = true
+                    }
+                } else {
+                    while (!fits && quality >= 30) {
+                        bos.reset()
+                        scaled.compress(format.compressFormat, quality, bos)
+                        if (bos.size() <= targetMaxBytes) {
+                            fits = true
+                            break
+                        }
+                        quality -= 15
+                    }
+                }
+                if (scaled !== resized) scaled.recycle()
+                if (fits) break
+                scale -= 0.15f
+            }
+        }
+    } else {
+        resized.compress(format.compressFormat, format.defaultQuality, bos)
+    }
+
+    if (source !== cropped) source.recycle()
+    if (cropped !== adjusted) cropped.recycle()
+    if (adjusted !== resized) adjusted.recycle()
+    resized.recycle()
+
+    bos.toByteArray()
+}
+
+private suspend fun saveEditedCopy(
+    context: Context,
+    image: MediaImage,
+    rotation: Int,
+    flipH: Boolean,
+    flipV: Boolean,
+    straightenAngle: Float = 0f,
+    brightness: Float,
+    saturation: Float,
+    contrast: Float,
+    warmth: Float,
+    crop: RectF,
+    requestedWidth: Int?,
+    requestedHeight: Int?,
+    strokes: List<BrushStroke>,
+    textOverlays: List<TextOverlay>,
+    targetMaxBytes: Long? = null,
+    format: ExportFormat = ExportFormat.JPEG
+) = withContext(Dispatchers.IO) {
+    val bytes = renderEditedBitmapToBytes(
+        context, image, rotation, flipH, flipV,
+        straightenAngle, brightness, saturation, contrast, warmth,
+        crop, requestedWidth, requestedHeight, strokes, textOverlays,
+        targetMaxBytes, format
+    )
+
     val nowMs = System.currentTimeMillis()
     val nowSec = nowMs / 1000L
     val effectiveTitle = image.title.takeIf { it.isNotBlank() && it != image.name && it != image.name.substringBeforeLast('.') }
@@ -1983,54 +2347,7 @@ private suspend fun saveEditedCopy(
     }
     val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("Could not create copy")
     context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-        if (targetMaxBytes != null && targetMaxBytes > 0) {
-            var quality = format.defaultQuality
-            val bos = java.io.ByteArrayOutputStream()
-            var fits = false
-            if (format != ExportFormat.PNG) {
-                while (!fits && quality >= 25) {
-                    bos.reset()
-                    resized.compress(format.compressFormat, quality, bos)
-                    if (bos.size() <= targetMaxBytes) {
-                        fits = true
-                        break
-                    }
-                    quality -= 10
-                }
-            }
-            if (!fits) {
-                var scale = 0.85f
-                while (!fits && scale >= 0.15f) {
-                    val sw = (resized.width * scale).toInt().coerceAtLeast(64)
-                    val sh = (resized.height * scale).toInt().coerceAtLeast(64)
-                    val scaled = Bitmap.createScaledBitmap(resized, sw, sh, true)
-                    quality = format.defaultQuality
-                    if (format == ExportFormat.PNG) {
-                        bos.reset()
-                        scaled.compress(format.compressFormat, 100, bos)
-                        if (bos.size() <= targetMaxBytes) {
-                            fits = true
-                        }
-                    } else {
-                        while (!fits && quality >= 30) {
-                            bos.reset()
-                            scaled.compress(format.compressFormat, quality, bos)
-                            if (bos.size() <= targetMaxBytes) {
-                                fits = true
-                                break
-                            }
-                            quality -= 15
-                        }
-                    }
-                    if (scaled !== resized) scaled.recycle()
-                    if (fits) break
-                    scale -= 0.15f
-                }
-            }
-            outputStream.write(bos.toByteArray())
-        } else {
-            resized.compress(format.compressFormat, format.defaultQuality, outputStream)
-        }
+        outputStream.write(bytes)
     } ?: error("Could not write copy")
     copyExifMetadata(context, image, uri)
     if (Build.VERSION.SDK_INT >= 29) {
@@ -2051,78 +2368,73 @@ private suspend fun saveEditedCopy(
             LibraryPreferences(context).setCustomTitle(newId, effectiveTitle)
         }
     }
-    if (source !== cropped) source.recycle()
-    if (cropped !== adjusted) cropped.recycle()
-    if (adjusted !== resized) adjusted.recycle()
-    resized.recycle()
 }
 
-private fun copyExifMetadata(context: Context, sourceImage: MediaImage, destUri: Uri) {
-    runCatching {
-        val srcExif = if (sourceImage.path.isNotBlank() && File(sourceImage.path).exists()) {
-            ExifInterface(sourceImage.path)
-        } else {
-            context.contentResolver.openInputStream(sourceImage.uri)?.use {
-                ExifInterface(it)
-            }
-        } ?: return
+private suspend fun performOverwriteWrite(
+    context: Context,
+    image: MediaImage,
+    bytes: ByteArray,
+    format: ExportFormat,
+    tags: Map<String, String>
+): Boolean = withContext(Dispatchers.IO) {
+    val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
+    if (isFile) {
+        val targetFile = File(image.path)
+        targetFile.parentFile?.mkdirs()
+        targetFile.writeBytes(bytes)
+        applyExifToFile(targetFile, tags)
+    } else {
+        val targetUri = canonicalMediaUri(context, image)
+        val written = context.contentResolver.openOutputStream(targetUri)?.use { out ->
+            out.write(bytes)
+            true
+        } ?: false
 
-        context.contentResolver.openFileDescriptor(destUri, "rw")?.use { pfd ->
-            val dstExif = ExifInterface(pfd.fileDescriptor)
-            val tagsToCopy = listOf(
-                ExifInterface.TAG_MAKE,
-                ExifInterface.TAG_MODEL,
-                ExifInterface.TAG_LENS_MAKE,
-                ExifInterface.TAG_LENS_MODEL,
-                ExifInterface.TAG_F_NUMBER,
-                ExifInterface.TAG_APERTURE_VALUE,
-                ExifInterface.TAG_EXPOSURE_TIME,
-                ExifInterface.TAG_SHUTTER_SPEED_VALUE,
-                ExifInterface.TAG_ISO_SPEED_RATINGS,
-                ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
-                ExifInterface.TAG_FOCAL_LENGTH,
-                ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
-                ExifInterface.TAG_FLASH,
-                ExifInterface.TAG_WHITE_BALANCE,
-                ExifInterface.TAG_SCENE_CAPTURE_TYPE,
-                ExifInterface.TAG_DATETIME_ORIGINAL,
-                ExifInterface.TAG_DATETIME_DIGITIZED,
-                ExifInterface.TAG_OFFSET_TIME_ORIGINAL,
-                ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
-                ExifInterface.TAG_IMAGE_DESCRIPTION,
-                ExifInterface.TAG_USER_COMMENT,
-                ExifInterface.TAG_ARTIST,
-                ExifInterface.TAG_COPYRIGHT,
-                "DocumentName",
-                "XPTitle",
-                "XPComment",
-                ExifInterface.TAG_GPS_LATITUDE,
-                ExifInterface.TAG_GPS_LATITUDE_REF,
-                ExifInterface.TAG_GPS_LONGITUDE,
-                ExifInterface.TAG_GPS_LONGITUDE_REF,
-                ExifInterface.TAG_GPS_ALTITUDE,
-                ExifInterface.TAG_GPS_ALTITUDE_REF,
-                ExifInterface.TAG_GPS_TIMESTAMP,
-                ExifInterface.TAG_GPS_DATESTAMP,
-                ExifInterface.TAG_GPS_PROCESSING_METHOD,
-                ExifInterface.TAG_IMAGE_UNIQUE_ID,
-            )
-            for (tag in tagsToCopy) {
-                val value = srcExif.getAttribute(tag)
-                if (value != null) {
-                    dstExif.setAttribute(tag, value)
+        if (!written) return@withContext false
+
+        if (tags.isNotEmpty()) {
+            runCatching {
+                context.contentResolver.openFileDescriptor(targetUri, "rw")?.use { pfd ->
+                    val dstExif = ExifInterface(pfd.fileDescriptor)
+                    applyExifTags(dstExif, tags)
+                    dstExif.saveAttributes()
                 }
             }
-            val effectiveTitle = sourceImage.title.takeIf { it.isNotBlank() && it != sourceImage.name && it != sourceImage.name.substringBeforeLast('.') }
-            if (effectiveTitle != null) {
-                dstExif.setAttribute("DocumentName", effectiveTitle)
-                dstExif.setAttribute("XPTitle", effectiveTitle)
-            }
-            dstExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
-            dstExif.setAttribute(ExifInterface.TAG_SOFTWARE, "Iris Gallery")
-            dstExif.saveAttributes()
+        }
+
+        if (image.path.isNotBlank() && File(image.path).exists()) {
+            applyExifToFile(File(image.path), tags)
         }
     }
+
+    if (image.id > 0) {
+        val targetUri = canonicalMediaUri(context, image)
+        val nowSec = System.currentTimeMillis() / 1000L
+        val updateValues = ContentValues().apply {
+            put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
+            put(MediaStore.Images.Media.SIZE, bytes.size.toLong())
+            put(MediaStore.Images.Media.MIME_TYPE, format.mimeType)
+        }
+        runCatching {
+            context.contentResolver.update(targetUri, updateValues, null, null)
+        }
+    }
+
+    if (image.path.isNotBlank()) {
+        MediaScannerConnection.scanFile(
+            context.applicationContext,
+            arrayOf(image.path),
+            arrayOf(format.mimeType),
+            null
+        )
+    }
+
+    runCatching {
+        coil3.SingletonImageLoader.get(context).memoryCache?.clear()
+        coil3.SingletonImageLoader.get(context).diskCache?.clear()
+    }
+
+    true
 }
 
 private fun renderBrushes(target: Bitmap, strokes: List<BrushStroke>, crop: RectF) {

@@ -68,7 +68,7 @@ val MediaImage.isMotionPhoto: Boolean
             name.contains("_MOTION.", ignoreCase = true) ||
             name.startsWith("MP_", ignoreCase = true)) return true
         // Apple Live Photo: paired .MOV/.mov file beside this image
-        if (path.isNotBlank()) {
+        if (path.isNotBlank() && (name.startsWith("IMG_", ignoreCase = true) || name.endsWith(".heic", ignoreCase = true))) {
             val stem = path.substringBeforeLast('.', "")
             if (stem.isNotBlank()) {
                 val movFile = java.io.File("$stem.MOV")
@@ -84,17 +84,15 @@ val MediaImage.isMotionPhoto: Boolean
  * Apple Live Photo exported as .livp (a renamed .zip containing IMG.JPG + IMG.MOV).
  * Extracts the inner JPEG to a temp cache file so Coil can display it.
  */
-val MediaImage.livpJpegCacheFile: java.io.File?
-    get() {
-        if (!name.endsWith(".livp", ignoreCase = true) &&
-            !path.endsWith(".livp", ignoreCase = true)) return null
-        if (path.isBlank()) return null
-        val src = java.io.File(path)
-        if (!src.exists() || !src.canRead()) return null
-        // Stable temp path derived from the source file path + last-modified stamp
-        val key = src.absolutePath.hashCode().toString() + "_" + src.lastModified()
-        return java.io.File(System.getProperty("java.io.tmpdir", "/tmp"), "livp_$key.jpg")
-    }
+fun MediaImage.livpJpegCacheFile(context: Context): java.io.File? {
+    if (!name.endsWith(".livp", ignoreCase = true) &&
+        !path.endsWith(".livp", ignoreCase = true)) return null
+    if (path.isBlank()) return null
+    val src = java.io.File(path)
+    if (!src.exists() || !src.canRead()) return null
+    val key = src.absolutePath.hashCode().toString() + "_" + src.lastModified()
+    return java.io.File(context.cacheDir, "livp_$key.jpg")
+}
 
 val MediaImage.isPanorama: Boolean
     get() {
