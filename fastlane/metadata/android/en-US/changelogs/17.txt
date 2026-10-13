@@ -7,6 +7,7 @@
 • SVG Vector Rendering: Crisp vector graphics support at all zoom scales (#161, #181)
 • Multi-Stage Zoom: Double-tap cycles between Fit, Fill, and 1:1 pixel scale (#173)
 • Straighten Tool: Rotation slider (-45° to +45°) in photo editor (#164)
+• Scrollbar Bubble & Details: Fixed scrollbar date bubble alignment and details sheet snap (#160, thanks @AndroidSuggest)
 • Scoped Storage & Trash Fixes: Fixed Android 11+ delete requests and preserved Recycle Bin timestamps (#181, #182)
 • HEIC Thumbnail Fix: Resolved blank and delayed HEIC grid rendering (#184)
 • Translations: Updated Polish (#172, thanks @tmpjx555) and added Chinese string coverage (#186, thanks @ghostdaxia)
