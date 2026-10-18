@@ -31,7 +31,9 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class GalleryUiState(
@@ -246,9 +248,13 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateMediaMetadata(media: MediaImage, request: ExifEditRequest): MediaImage {
-        val newTitle = if (request.stripAllExif) "" else request.title
-        val newDescription = if (request.stripAllExif) "" else (request.imageDescription ?: media.description)
-        libraryPreferences.setCustomTitle(media.id, if (request.stripAllExif) null else request.title.ifBlank { null })
+        val newTitle = request.title
+        val newDescription = when {
+            request.imageDescription != null -> request.imageDescription
+            request.stripAllExif -> ""
+            else -> media.description
+        }
+        libraryPreferences.setCustomTitle(media.id, request.title.ifBlank { null })
         val updated = media.copy(
             title = newTitle,
             orientation = request.orientation,
@@ -320,8 +326,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         refreshJob = viewModelScope.launch {
             try {
                 kotlinx.coroutines.withTimeout(20_000) {
-                    vaultRepository.loadVaultItems()
-                    val internalTrash = trashRepository.loadTrashItems()
+                    // Index loads touch storage and take the repo index lock, so keep them off the main thread.
+                    val internalTrash = withContext(Dispatchers.IO) {
+                        vaultRepository.loadVaultItems()
+                        trashRepository.loadTrashItems()
+                    }
                     val systemTrash = if (android.os.Build.VERSION.SDK_INT >= 30 && settingsPreferences.state.value.useSystemTrash) {
                         try {
                             repository.loadImages(trashed = true)

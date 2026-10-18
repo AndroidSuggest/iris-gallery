@@ -962,20 +962,15 @@ internal fun GalleryApp(
                         onEditMetadata = { media, request, callback ->
                             val values = ContentValues().apply {
                                 put(MediaStore.MediaColumns.DISPLAY_NAME, request.displayName)
-                                if (request.stripAllExif) {
-                                    putNull(MediaStore.MediaColumns.TITLE)
-                                    putNull(MediaStore.Images.Media.DESCRIPTION)
+                                if (request.title.isNotBlank()) {
+                                    put(MediaStore.MediaColumns.TITLE, request.title)
                                 } else {
-                                    if (request.title.isNotBlank()) {
-                                        put(MediaStore.MediaColumns.TITLE, request.title)
-                                    } else {
-                                        putNull(MediaStore.MediaColumns.TITLE)
-                                    }
-                                    if (request.imageDescription != null) {
-                                        put(MediaStore.Images.Media.DESCRIPTION, request.imageDescription)
-                                    } else {
-                                        putNull(MediaStore.Images.Media.DESCRIPTION)
-                                    }
+                                    putNull(MediaStore.MediaColumns.TITLE)
+                                }
+                                if (request.imageDescription != null) {
+                                    put(MediaStore.Images.Media.DESCRIPTION, request.imageDescription)
+                                } else {
+                                    putNull(MediaStore.Images.Media.DESCRIPTION)
                                 }
                                 put(MediaStore.Images.Media.DATE_TAKEN, request.dateTakenMillis)
                                 put(MediaStore.Images.Media.ORIENTATION, request.orientation)

@@ -48,6 +48,8 @@ data class VaultMoveResult(
     val indexWriteFailed: Boolean = false,
 )
 
+private data class VaultRestoreTarget(val uri: Uri, val path: String)
+
 private const val VAULT_INDEX_CHECKPOINT_INTERVAL = 20
 private const val VAULT_RECOVERED_BUCKET = "Recovered"
 private val VAULT_VIDEO_EXTENSIONS = setOf(
@@ -67,6 +69,12 @@ class VaultRepository(private val context: Context) {
     }
 
     private val indexFile = AtomicFile(File(context.filesDir, "vault_index.json"))
+
+    // Every index read-modify-write sequence runs under this lock so a slow batch
+    // cannot overwrite an index update from a concurrent operation. Reentrant by
+    // design: load calls nested inside a locked operation are safe.
+    private val indexLock = Any()
+
     private val _vaultMedia = MutableStateFlow<List<MediaImage>>(emptyList())
     val vaultMedia: StateFlow<List<MediaImage>> = _vaultMedia.asStateFlow()
 
@@ -82,7 +90,7 @@ class VaultRepository(private val context: Context) {
         }
     }
 
-    fun loadVaultItems(): List<MediaImage> {
+    fun loadVaultItems(): List<MediaImage> = synchronized(indexLock) {
         val items = readIndex()
         val mediaList = items.mapNotNull { item ->
             val file = File(vaultDir, item.vaultFileName)
@@ -111,7 +119,7 @@ class VaultRepository(private val context: Context) {
             }
         }
         _vaultMedia.value = mediaList
-        return mediaList
+        mediaList
     }
 
     /**
@@ -122,8 +130,8 @@ class VaultRepository(private val context: Context) {
      * Returns the number of files recovered. Aborts (and returns 0) when the index cannot be read,
      * so a corrupt index can never cause every file to be adopted and duplicates to be created.
      */
-    suspend fun recoverOrphanedItems(): Int = withContext(Dispatchers.IO) {
-        val currentItems = (readIndexStrict() ?: return@withContext 0).toMutableList()
+    suspend fun recoverOrphanedItems(): Int = indexLocked {
+        val currentItems = (readIndexStrict() ?: return@indexLocked 0).toMutableList()
         val knownNames = currentItems.mapTo(mutableSetOf()) { it.vaultFileName }
         val usedIds = currentItems.mapTo(mutableSetOf()) { it.id }
         val orphans = (vaultDir.listFiles() ?: emptyArray())
@@ -131,7 +139,7 @@ class VaultRepository(private val context: Context) {
                 file.isFile && file.name != ".nomedia" && file.name !in knownNames && file.length() > 0
             }
             .sortedBy { it.name }
-        if (orphans.isEmpty()) return@withContext 0
+        if (orphans.isEmpty()) return@indexLocked 0
 
         var recovered = 0
         for (file in orphans) {
@@ -164,13 +172,13 @@ class VaultRepository(private val context: Context) {
         }
 
         if (!persistIndexVerified(currentItems)) {
-            return@withContext 0
+            return@indexLocked 0
         }
         loadVaultItems()
         recovered
     }
 
-    suspend fun moveToVault(mediaList: List<MediaImage>): VaultMoveResult = withContext(Dispatchers.IO) {
+    suspend fun moveToVault(mediaList: List<MediaImage>): VaultMoveResult = indexLocked {
         val currentItems = readIndex().toMutableList()
         val vaultedList = mutableListOf<MediaImage>()
         val originalList = mutableListOf<MediaImage>()
@@ -194,8 +202,16 @@ class VaultRepository(private val context: Context) {
                         input.copyTo(output)
                     }
                 }
-                targetFile.exists() && targetFile.length() > 0
+                val copiedBytes = targetFile.length()
+                // A truncated copy is worse than no copy: the original is only
+                // deleted after this check passes.
+                targetFile.exists() && copiedBytes > 0 && (item.sizeBytes <= 0 || copiedBytes == item.sizeBytes)
             }.getOrDefault(false)
+
+            if (!copySuccess) {
+                // Don't leave half-written bytes where orphan recovery could pick them up.
+                runCatching { targetFile.delete() }
+            }
 
             if (copySuccess) {
                 val vaultItem = VaultItem(
@@ -259,10 +275,10 @@ class VaultRepository(private val context: Context) {
         // Originals are only ever removed after the index is safely on disk.
         var silentSuccess = false
         if (!indexWriteFailed && hasManagerAccess && vaultedList.isNotEmpty()) {
-            val allDeleted = originalList.all { item ->
-                deleteFromStorage(item)
-            }
-            if (allDeleted) {
+            // Attempt every delete. all{} short-circuits on the first failure and
+            // would leave the remaining originals behind.
+            val deleteResults = originalList.map { item -> deleteFromStorage(item) }
+            if (deleteResults.all { it }) {
                 silentSuccess = true
             }
         }
@@ -331,7 +347,7 @@ class VaultRepository(private val context: Context) {
         return deleted
     }
 
-    suspend fun rollbackVault(vaultedItems: List<MediaImage>) = withContext(Dispatchers.IO) {
+    suspend fun rollbackVault(vaultedItems: List<MediaImage>) = indexLocked {
         val currentItems = readIndex().toMutableList()
         val idsToRemove = vaultedItems.map { abs(it.id) }.toSet()
 
@@ -354,7 +370,7 @@ class VaultRepository(private val context: Context) {
         loadVaultItems()
     }
 
-    suspend fun restoreFromVault(mediaList: List<MediaImage>): List<MediaImage> = withContext(Dispatchers.IO) {
+    suspend fun restoreFromVault(mediaList: List<MediaImage>): List<MediaImage> = indexLocked {
         val currentItems = readIndex().toMutableList()
         val restoredList = mutableListOf<MediaImage>()
         val idsToRemove = mediaList.map { abs(it.id) }.toSet()
@@ -368,18 +384,18 @@ class VaultRepository(private val context: Context) {
             }
 
             val restored = restoreFileToStorage(item, vaultFile)
-            if (restored) {
+            if (restored != null) {
                 runCatching { vaultFile.delete() }
                 currentItems.remove(item)
                 restoredList.add(
                     MediaImage(
                         id = -item.id,
-                        uri = Uri.fromFile(vaultFile),
+                        uri = restored.uri,
                         name = item.originalName,
                         dateTaken = item.dateTaken,
                         width = item.width,
                         height = item.height,
-                        path = item.originalPath,
+                        path = restored.path,
                         bucketId = item.originalBucketId,
                         bucketName = item.originalBucketName,
                         isVideo = item.isVideo,
@@ -399,7 +415,7 @@ class VaultRepository(private val context: Context) {
         restoredList
     }
 
-    suspend fun deletePermanently(mediaList: List<MediaImage>) = withContext(Dispatchers.IO) {
+    suspend fun deletePermanently(mediaList: List<MediaImage>) = indexLocked {
         val currentItems = readIndex().toMutableList()
         val idsToRemove = mediaList.map { abs(it.id) }.toSet()
 
@@ -416,7 +432,7 @@ class VaultRepository(private val context: Context) {
         loadVaultItems()
     }
 
-    private fun restoreFileToStorage(item: VaultItem, vaultFile: File): Boolean {
+    private fun restoreFileToStorage(item: VaultItem, vaultFile: File): VaultRestoreTarget? {
         return try {
             if (hasAllFilesAccess()) {
                 val destFile = if (item.originalPath.isNotBlank()) {
@@ -439,7 +455,7 @@ class VaultRepository(private val context: Context) {
                     arrayOf(item.mimeType.ifBlank { null }),
                     null
                 )
-                true
+                VaultRestoreTarget(Uri.fromFile(destFile), destFile.absolutePath)
             } else if (Build.VERSION.SDK_INT >= 29) {
                 val relativePath = computeRelativePath(item.originalPath, item.isVideo)
                 val nowSec = System.currentTimeMillis() / 1000
@@ -452,7 +468,7 @@ class VaultRepository(private val context: Context) {
                     )
                     put(MediaStore.MediaColumns.DATE_ADDED, nowSec)
                     put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                    put(MediaStore.MediaColumns.DATE_TAKEN, item.dateTaken)
+                    put(MediaStore.MediaColumns.DATE_TAKEN, if (item.dateTaken > 0) item.dateTaken else dateSec * 1000)
                     if (!item.isVideo) {
                         put(MediaStore.Images.Media.ORIENTATION, item.orientation)
                     }
@@ -468,11 +484,11 @@ class VaultRepository(private val context: Context) {
                 } else {
                     MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
                 }
-                val newUri = context.contentResolver.insert(collection, values) ?: return false
+                val newUri = context.contentResolver.insert(collection, values) ?: return null
                 val outputStream = context.contentResolver.openOutputStream(newUri)
                 if (outputStream == null) {
                     context.contentResolver.delete(newUri, null, null)
-                    return false
+                    return null
                 }
                 outputStream.use { output ->
                     vaultFile.inputStream().use { input -> input.copyTo(output) }
@@ -482,9 +498,9 @@ class VaultRepository(private val context: Context) {
                 values.put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
                 if (context.contentResolver.update(newUri, values, null, null) <= 0) {
                     context.contentResolver.delete(newUri, null, null)
-                    return false
+                    return null
                 }
-                true
+                VaultRestoreTarget(newUri, mediaStorePath(newUri))
             } else {
                 @Suppress("DEPRECATION")
                 val publicDir = if (item.originalPath.isNotBlank()) {
@@ -507,12 +523,19 @@ class VaultRepository(private val context: Context) {
                     arrayOf(item.mimeType.ifBlank { null }),
                     null
                 )
-                true
+                VaultRestoreTarget(Uri.fromFile(destFile), destFile.absolutePath)
             }
         } catch (e: Exception) {
-            false
+            null
         }
     }
+
+    /** Where a restore through MediaStore actually landed. */
+    private fun mediaStorePath(uri: Uri): String = runCatching {
+        context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull().orEmpty()
 
     private fun computeRelativePath(originalPath: String, isVideo: Boolean): String {
         val defaultDir = if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
@@ -602,6 +625,9 @@ class VaultRepository(private val context: Context) {
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
             ?: if (isVideo) "video/mp4" else "image/jpeg"
     }
+
+    private suspend fun <T> indexLocked(block: () -> T): T =
+        withContext(Dispatchers.IO) { synchronized(indexLock) { block() } }
 
     private fun readIndex(): List<VaultItem> = readIndexStrict() ?: emptyList()
 

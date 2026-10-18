@@ -647,9 +647,8 @@ fun ExifEditorSheet(
                             shutterSpeedStr.toDoubleOrNull()
                         }
 
-                        val customTitle = if (stripAllExif) "" else mediaTitle.trim()
-                        val effectiveTitle = if (customTitle.isNotBlank()) customTitle else ""
-                        val effectiveDesc = if (stripAllExif) null else imageDescription.trim().ifBlank { null }
+                        val effectiveTitle = mediaTitle.trim()
+                        val effectiveDesc = imageDescription.trim().ifBlank { null }
 
                         val request = ExifEditRequest(
                             displayName = image.name,
@@ -671,7 +670,12 @@ fun ExifEditorSheet(
                             whiteBalance = whiteBalance,
                             latitude = parsedLat,
                             longitude = parsedLng,
-                            removeGps = removeGps || (parsedLat == null && parsedLng == null && exif?.latitude != null),
+                            // Strip-all clears the fields; anything typed after that still wins.
+                            removeGps = if (stripAllExif && parsedLat != null && parsedLng != null) {
+                                false
+                            } else {
+                                removeGps || (parsedLat == null && parsedLng == null && exif?.latitude != null)
+                            },
                             stripAllExif = stripAllExif,
                             offsetTimeOriginal = exif?.offsetTimeOriginal,
                         )

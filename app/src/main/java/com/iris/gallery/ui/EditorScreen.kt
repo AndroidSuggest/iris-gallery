@@ -121,6 +121,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.iris.gallery.R
 import com.iris.gallery.data.MediaImage
 import com.iris.gallery.data.isSvg
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -210,7 +211,10 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                 scope.launch {
                     val success = runCatching {
                         performOverwriteWrite(context, image, bytes, fmt, tags)
-                    }.getOrDefault(false)
+                    }.getOrElse {
+                        if (it is CancellationException) throw it
+                        false
+                    }
                     saving = false
                     onSaved(success, true)
                 }
@@ -714,7 +718,10 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                                 targetMaxBytes = if (isCustomResized) targetMaxBytes else null,
                                 format = format
                             )
-                        }.getOrNull()
+                        }.getOrElse {
+                            if (it is CancellationException) throw it
+                            null
+                        }
 
                         if (bytes == null) {
                             saving = false
@@ -726,40 +733,32 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                             val success = performOverwriteWrite(context, image, bytes, format, tags)
                             saving = false
                             onSaved(success, true)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: SecurityException) {
-                            if (Build.VERSION.SDK_INT >= 30) {
-                                val canonicalUri = canonicalMediaUri(context, image)
-                                val writeReq = runCatching {
-                                    MediaStore.createWriteRequest(context.contentResolver, listOf(canonicalUri))
-                                }.getOrNull()
-
-                                if (writeReq != null) {
-                                    pendingOverwriteBytes = bytes
-                                    pendingOverwriteFormat = format
-                                    pendingCachedTags = tags
-                                    writePermissionLauncher.launch(
-                                        IntentSenderRequest.Builder(writeReq.intentSender).build()
-                                    )
-                                } else {
-                                    saving = false
-                                    onSaved(false, true)
-                                }
-                            } else {
-                                saving = false
-                                onSaved(false, true)
+                            val consentSender = when {
+                                Build.VERSION.SDK_INT >= 30 -> runCatching {
+                                    MediaStore.createWriteRequest(context.contentResolver, listOf(canonicalMediaUri(context, image)))
+                                }.getOrNull()?.intentSender
+                                // API 29 hands the consent intent back on the exception itself.
+                                Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException -> e.userAction.actionIntent.intentSender
+                                else -> null
                             }
-                        } catch (e: Exception) {
-                            if (Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException) {
+
+                            if (consentSender != null) {
                                 pendingOverwriteBytes = bytes
                                 pendingOverwriteFormat = format
                                 pendingCachedTags = tags
                                 writePermissionLauncher.launch(
-                                    IntentSenderRequest.Builder(e.userAction.actionIntent.intentSender).build()
+                                    IntentSenderRequest.Builder(consentSender).build()
                                 )
                             } else {
                                 saving = false
                                 onSaved(false, true)
                             }
+                        } catch (e: Exception) {
+                            saving = false
+                            onSaved(false, true)
                         }
                     } else {
                         val saved = runCatching {
@@ -2017,6 +2016,28 @@ private fun TextControls(
     }
 }
 
+private fun decodePreviewLegacy(context: Context, image: MediaImage, isFile: Boolean): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    if (isFile) {
+        BitmapFactory.decodeFile(image.path, bounds)
+    } else {
+        context.contentResolver.openInputStream(image.uri)?.use {
+            BitmapFactory.decodeStream(it, null, bounds)
+        } ?: return null
+    }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1600) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    return if (isFile) {
+        BitmapFactory.decodeFile(image.path, options)
+    } else {
+        context.contentResolver.openInputStream(image.uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        }
+    }
+}
+
 private suspend fun loadPreview(context: Context, image: MediaImage): Bitmap? = withContext(Dispatchers.IO) {
     val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
     val standardBitmap = runCatching {
@@ -2029,8 +2050,7 @@ private suspend fun loadPreview(context: Context, image: MediaImage): Bitmap? = 
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
         } else {
-            if (isFile) BitmapFactory.decodeFile(image.path)
-            else context.contentResolver.openInputStream(image.uri).use(BitmapFactory::decodeStream)
+            decodePreviewLegacy(context, image, isFile)
         }
     }.getOrNull()
 
@@ -2397,27 +2417,33 @@ private suspend fun saveEditedCopy(
         }
     }
     val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("Could not create copy")
-    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-        outputStream.write(bytes)
-    } ?: error("Could not write copy")
-    copyExifMetadata(context, image, uri)
-    if (Build.VERSION.SDK_INT >= 29) {
-        val updateValues = ContentValues().apply {
-            put(MediaStore.Images.Media.IS_PENDING, 0)
-            put(MediaStore.Images.Media.DATE_ADDED, nowSec)
-            put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
-            put(MediaStore.Images.Media.DATE_TAKEN, nowMs)
-            if (effectiveTitle != null) {
-                put(MediaStore.Images.Media.TITLE, effectiveTitle)
+    try {
+        context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+            outputStream.write(bytes)
+        } ?: error("Could not write copy")
+        copyExifMetadata(context, image, uri)
+        if (Build.VERSION.SDK_INT >= 29) {
+            val updateValues = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+                put(MediaStore.Images.Media.DATE_ADDED, nowSec)
+                put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
+                put(MediaStore.Images.Media.DATE_TAKEN, nowMs)
+                if (effectiveTitle != null) {
+                    put(MediaStore.Images.Media.TITLE, effectiveTitle)
+                }
+            }
+            context.contentResolver.update(uri, updateValues, null, null)
+        }
+        val newId = uri.lastPathSegment?.toLongOrNull()
+        if (newId != null && effectiveTitle != null) {
+            runCatching {
+                LibraryPreferences(context).setCustomTitle(newId, effectiveTitle)
             }
         }
-        context.contentResolver.update(uri, updateValues, null, null)
-    }
-    val newId = uri.lastPathSegment?.toLongOrNull()
-    if (newId != null && effectiveTitle != null) {
-        runCatching {
-            LibraryPreferences(context).setCustomTitle(newId, effectiveTitle)
-        }
+    } catch (t: Throwable) {
+        // A half-written copy must not stay behind as an invisible IS_PENDING row.
+        runCatching { context.contentResolver.delete(uri, null, null) }
+        throw t
     }
 }
 

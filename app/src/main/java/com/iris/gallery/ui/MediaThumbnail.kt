@@ -60,7 +60,6 @@ object ThumbnailCache {
     private val bucketSizes = listOf(180, 256, 320, 384, 512, 768)
 
     fun findForImage(id: Long): Bitmap? {
-        cache.get(id)?.let { return it }
         for (bucket in bucketSizes) {
             val key = (id shl 16) xor (bucket.toLong() and 0xFFFFL)
             cache.get(key)?.let { return it }
@@ -192,20 +191,21 @@ private fun loadThumbnail(context: Context, image: MediaImage, targetSizePx: Int
                     }
                     if (org.aomedia.avif.android.AvifDecoder.isAvifImage(byteBuffer)) {
                         val info = org.aomedia.avif.android.AvifDecoder.Info()
-                        if (org.aomedia.avif.android.AvifDecoder.getInfo(byteBuffer, bytes.size, info)) {
-                            val fullBmp = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
-                            if (org.aomedia.avif.android.AvifDecoder.decode(byteBuffer, bytes.size, fullBmp)) {
-                                val scale = minOf(1f, targetSizePx.toFloat() / maxOf(info.width, info.height))
-                                val tw = (info.width * scale).toInt().coerceAtLeast(1)
-                                val th = (info.height * scale).toInt().coerceAtLeast(1)
-                                if (tw < info.width || th < info.height) {
-                                    Bitmap.createScaledBitmap(fullBmp, tw, th, true).also {
-                                        if (it !== fullBmp) fullBmp.recycle()
-                                    }
-                                } else {
-                                    fullBmp
-                                }
-                            } else null
+                        if (org.aomedia.avif.android.AvifDecoder.getInfo(byteBuffer, bytes.size, info) &&
+                            info.width > 0 && info.height > 0
+                        ) {
+                            // The decoder scales into whatever bitmap it is given, so ask
+                            // for the thumbnail size up front instead of a full-size buffer.
+                            val scale = minOf(1f, targetSizePx.toFloat() / maxOf(info.width, info.height))
+                            val tw = (info.width * scale).toInt().coerceIn(1, info.width)
+                            val th = (info.height * scale).toInt().coerceIn(1, info.height)
+                            val bmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+                            if (org.aomedia.avif.android.AvifDecoder.decode(byteBuffer, bytes.size, bmp)) {
+                                bmp
+                            } else {
+                                bmp.recycle()
+                                null
+                            }
                         } else null
                     } else null
                 } else null

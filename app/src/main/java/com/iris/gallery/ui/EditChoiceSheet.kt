@@ -219,11 +219,6 @@ fun launchExternalEditor(context: Context, image: MediaImage) {
     }
 }
 
-fun setAsWallpaper(context: Context, image: MediaImage) {
-    launchSystemWallpaperPicker(context, image)
-}
-
-
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun EditChoiceBottomSheet(

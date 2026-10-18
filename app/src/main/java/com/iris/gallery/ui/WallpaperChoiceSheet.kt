@@ -65,9 +65,8 @@ suspend fun applyWallpaper(
 
         if (allowScroll) {
             // Full stream - Android launcher can scroll image horizontally across pages
-            context.contentResolver.openInputStream(uri)?.use { stream ->
-                wallpaperManager.setStream(stream, null, true, which)
-            }
+            val stream = context.contentResolver.openInputStream(uri) ?: return@withContext false
+            stream.use { wallpaperManager.setStream(it, null, true, which) }
             return@withContext true
         }
 

@@ -8,8 +8,11 @@ import coil3.decode.Decoder
 import coil3.decode.ImageSource
 import coil3.fetch.SourceFetchResult
 import coil3.request.Options
+import coil3.size.pxOrElse
 import org.aomedia.avif.android.AvifDecoder
 import java.nio.ByteBuffer
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 class AvifCoilDecoder(
     private val source: ImageSource,
@@ -33,8 +36,24 @@ class AvifCoilDecoder(
         if (!AvifDecoder.getInfo(byteBuffer, bytes.size, info)) {
             return null
         }
+        if (info.width <= 0 || info.height <= 0) {
+            return null
+        }
 
-        val bitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
+        // AvifDecoder scales the decoded image into whatever bitmap it is handed, so
+        // allocate only what the request needs instead of a full-size buffer.
+        val requestedWidth = options.size.width.pxOrElse { info.width }
+        val requestedHeight = options.size.height.pxOrElse { info.height }
+        val needsScale = requestedWidth < info.width || requestedHeight < info.height
+        val ratio = if (needsScale) {
+            min(requestedWidth.toFloat() / info.width, requestedHeight.toFloat() / info.height)
+        } else {
+            1f
+        }
+        val targetWidth = (info.width * ratio).roundToInt().coerceIn(1, info.width)
+        val targetHeight = (info.height * ratio).roundToInt().coerceIn(1, info.height)
+
+        val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         if (!AvifDecoder.decode(byteBuffer, bytes.size, bitmap)) {
             bitmap.recycle()
             return null
@@ -42,7 +61,7 @@ class AvifCoilDecoder(
 
         return DecodeResult(
             image = bitmap.asImage(),
-            isSampled = false,
+            isSampled = targetWidth != info.width || targetHeight != info.height,
         )
     }
 
@@ -57,14 +76,23 @@ class AvifCoilDecoder(
                 return AvifCoilDecoder(result.source, options)
             }
             val source = result.source.source()
-            if (source.request(12)) {
-                val header = source.buffer.peek().readByteString(12)
-                if (header.size >= 12 && header.substring(4, 8).utf8() == "ftyp") {
-                    val brand = header.substring(8, 12).utf8()
-                    if (brand == "avif" || brand == "avis" || brand == "mif1") {
-                        return AvifCoilDecoder(result.source, options)
-                    }
+            if (!source.request(16)) return null
+            val head = source.buffer.peek()
+            val boxSize = head.readInt()
+            if (head.readByteString(4).utf8() != "ftyp") return null
+            // The major brand alone is not enough: some AVIF writers leave 'mif1' in the
+            // major slot and advertise 'avif' only as a compatible brand, while real HEIF
+            // files carry no AVIF brand at all and should go to the platform decoder.
+            val ftypSize = boxSize.coerceIn(16, 128)
+            if (!source.request(ftypSize.toLong())) return null
+            val ftyp = source.buffer.peek().readByteString(ftypSize.toLong())
+            var offset = 8
+            while (offset + 4 <= ftyp.size) {
+                val brand = ftyp.substring(offset, offset + 4).utf8()
+                if (brand == "avif" || brand == "avis") {
+                    return AvifCoilDecoder(result.source, options)
                 }
+                offset += 4
             }
             return null
         }

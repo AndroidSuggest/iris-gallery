@@ -26,6 +26,8 @@ data class TrashMoveResult(
     val silentSuccess: Boolean = false,
 )
 
+private data class TrashRestoreTarget(val uri: Uri, val path: String)
+
 data class TrashItem(
     val id: Long,
     val trashFileName: String,
@@ -60,6 +62,12 @@ class TrashRepository(private val context: Context) {
     }
 
     private val indexFile = AtomicFile(File(context.filesDir, "trash_index.json"))
+
+    // Every index read-modify-write sequence runs under this lock so a slow batch
+    // cannot overwrite an index update from a concurrent operation. Reentrant by
+    // design: load calls nested inside a locked operation are safe.
+    private val indexLock = Any()
+
     private val _trashedMedia = MutableStateFlow<List<MediaImage>>(emptyList())
     val trashedMedia: StateFlow<List<MediaImage>> = _trashedMedia.asStateFlow()
 
@@ -79,7 +87,7 @@ class TrashRepository(private val context: Context) {
         }
     }
 
-    fun autoPurgeOldItems(): Int {
+    fun autoPurgeOldItems(): Int = synchronized(indexLock) {
         val items = readIndex().toMutableList()
         val now = System.currentTimeMillis()
         var purgedCount = 0
@@ -96,10 +104,10 @@ class TrashRepository(private val context: Context) {
         if (purgedCount > 0) {
             writeIndex(items)
         }
-        return purgedCount
+        purgedCount
     }
 
-    fun loadTrashItems(): List<MediaImage> {
+    fun loadTrashItems(): List<MediaImage> = synchronized(indexLock) {
         autoPurgeOldItems()
         val items = readIndex()
         val mediaList = items.mapNotNull { item ->
@@ -131,7 +139,7 @@ class TrashRepository(private val context: Context) {
             }
         }
         _trashedMedia.value = mediaList
-        return mediaList
+        mediaList
     }
 
     fun deleteFromStorage(item: MediaImage): Boolean {
@@ -202,7 +210,7 @@ class TrashRepository(private val context: Context) {
         return deleted
     }
 
-    suspend fun moveToTrash(mediaList: List<MediaImage>): TrashMoveResult = withContext(Dispatchers.IO) {
+    suspend fun moveToTrash(mediaList: List<MediaImage>): TrashMoveResult = indexLocked {
         val currentItems = readIndex().toMutableList()
         val trashedList = mutableListOf<MediaImage>()
         val originalList = mutableListOf<MediaImage>()
@@ -219,19 +227,30 @@ class TrashRepository(private val context: Context) {
 
             if (srcFile != null && srcFile.exists()) {
                 copied = runCatching {
-                    srcFile.copyTo(targetFile, overwrite = true).exists() && targetFile.length() > 0
+                    srcFile.copyTo(targetFile, overwrite = true)
+                    // A truncated copy is worse than no copy: the original is only
+                    // deleted after this check passes.
+                    targetFile.exists() && targetFile.length() > 0 && targetFile.length() == srcFile.length()
                 }.getOrDefault(false)
             }
 
             if (!copied) {
+                runCatching { targetFile.delete() }
                 copied = runCatching {
                     context.contentResolver.openInputStream(item.uri)?.use { input ->
                         FileOutputStream(targetFile).use { output ->
                             input.copyTo(output)
                         }
                     }
-                    targetFile.exists() && targetFile.length() > 0
+                    val copiedBytes = targetFile.length()
+                    val expectedBytes = if (srcFile != null && srcFile.length() > 0) srcFile.length() else item.sizeBytes
+                    targetFile.exists() && copiedBytes > 0 && (expectedBytes <= 0 || copiedBytes == expectedBytes)
                 }.getOrDefault(false)
+            }
+
+            if (!copied) {
+                // Don't leave half-written bytes where recovery could mistake them for a real entry.
+                runCatching { targetFile.delete() }
             }
 
             if (copied && targetFile.exists()) {
@@ -307,7 +326,7 @@ class TrashRepository(private val context: Context) {
         TrashMoveResult(trashedMedia = trashedList, originalMedia = originalList, silentSuccess = silentSuccess)
     }
 
-    suspend fun rollbackTrash(trashedItems: List<MediaImage>) = withContext(Dispatchers.IO) {
+    suspend fun rollbackTrash(trashedItems: List<MediaImage>) = indexLocked {
         val currentItems = readIndex().toMutableList()
         val idsToRemove = trashedItems.map { abs(it.id) }.toSet()
 
@@ -324,7 +343,7 @@ class TrashRepository(private val context: Context) {
         loadTrashItems()
     }
 
-    suspend fun restoreFromTrash(mediaList: List<MediaImage>): List<MediaImage> = withContext(Dispatchers.IO) {
+    suspend fun restoreFromTrash(mediaList: List<MediaImage>): List<MediaImage> = indexLocked {
         val currentItems = readIndex().toMutableList()
         val restoredList = mutableListOf<MediaImage>()
         val idsToRemove = mediaList.map { abs(it.id) }.toSet()
@@ -338,18 +357,18 @@ class TrashRepository(private val context: Context) {
             }
 
             val restored = restoreFileToStorage(item, trashFile)
-            if (restored) {
+            if (restored != null) {
                 runCatching { trashFile.delete() }
                 currentItems.remove(item)
                 restoredList.add(
                     MediaImage(
                         id = item.id,
-                        uri = Uri.fromFile(trashFile),
+                        uri = restored.uri,
                         name = item.originalName,
                         dateTaken = item.dateTaken,
                         width = item.width,
                         height = item.height,
-                        path = item.originalPath,
+                        path = restored.path,
                         bucketId = item.originalBucketId,
                         bucketName = item.originalBucketName,
                         isVideo = item.isVideo,
@@ -371,7 +390,7 @@ class TrashRepository(private val context: Context) {
         restoredList
     }
 
-    suspend fun deletePermanently(mediaList: List<MediaImage>) = withContext(Dispatchers.IO) {
+    suspend fun deletePermanently(mediaList: List<MediaImage>) = indexLocked {
         val currentItems = readIndex().toMutableList()
         val idsToRemove = mediaList.map { abs(it.id) }.toSet()
         val pathsToRemove = mediaList.map { it.path }.toSet()
@@ -396,7 +415,7 @@ class TrashRepository(private val context: Context) {
         loadTrashItems()
     }
 
-    suspend fun emptyTrash() = withContext(Dispatchers.IO) {
+    suspend fun emptyTrash() = indexLocked {
         trashDir.listFiles()?.forEach { file ->
             if (file.name != ".nomedia") {
                 runCatching { file.delete() }
@@ -406,7 +425,7 @@ class TrashRepository(private val context: Context) {
         loadTrashItems()
     }
 
-    private fun restoreFileToStorage(item: TrashItem, trashFile: File): Boolean {
+    private fun restoreFileToStorage(item: TrashItem, trashFile: File): TrashRestoreTarget? {
         return try {
             val effectiveModMs = when {
                 item.dateModified > 0L -> item.dateModified
@@ -438,7 +457,7 @@ class TrashRepository(private val context: Context) {
                     arrayOf(item.mimeType.ifBlank { null }),
                     null
                 )
-                true
+                TrashRestoreTarget(Uri.fromFile(destFile), destFile.absolutePath)
             } else if (Build.VERSION.SDK_INT >= 29) {
                 val relativePath = computeRelativePath(item.originalPath, item.isVideo)
                 val values = ContentValues().apply {
@@ -465,11 +484,11 @@ class TrashRepository(private val context: Context) {
                 } else {
                     MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
                 }
-                val newUri = context.contentResolver.insert(collection, values) ?: return false
+                val newUri = context.contentResolver.insert(collection, values) ?: return null
                 val outputStream = context.contentResolver.openOutputStream(newUri)
                 if (outputStream == null) {
                     context.contentResolver.delete(newUri, null, null)
-                    return false
+                    return null
                 }
                 outputStream.use { output ->
                     trashFile.inputStream().use { input -> input.copyTo(output) }
@@ -481,9 +500,9 @@ class TrashRepository(private val context: Context) {
                 values.put(MediaStore.MediaColumns.DATE_ADDED, effectiveAddedSec)
                 if (context.contentResolver.update(newUri, values, null, null) <= 0) {
                     context.contentResolver.delete(newUri, null, null)
-                    return false
+                    return null
                 }
-                true
+                TrashRestoreTarget(newUri, mediaStorePath(newUri))
             } else {
                 @Suppress("DEPRECATION")
                 val publicDir = if (item.originalPath.isNotBlank()) {
@@ -506,12 +525,19 @@ class TrashRepository(private val context: Context) {
                     arrayOf(item.mimeType.ifBlank { null }),
                     null
                 )
-                true
+                TrashRestoreTarget(Uri.fromFile(destFile), destFile.absolutePath)
             }
         } catch (e: Exception) {
-            false
+            null
         }
     }
+
+    /** Where a restore through MediaStore actually landed. */
+    private fun mediaStorePath(uri: Uri): String = runCatching {
+        context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull().orEmpty()
 
     private fun computeRelativePath(originalPath: String, isVideo: Boolean): String {
         val defaultDir = if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
@@ -550,6 +576,9 @@ class TrashRepository(private val context: Context) {
     private fun sanitizeFileName(name: String): String {
         return name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
     }
+
+    private suspend fun <T> indexLocked(block: () -> T): T =
+        withContext(Dispatchers.IO) { synchronized(indexLock) { block() } }
 
     private fun readIndex(): List<TrashItem> {
         val file = indexFile.baseFile

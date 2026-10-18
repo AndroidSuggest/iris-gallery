@@ -730,88 +730,94 @@ fun applyExifToExifInterface(exif: androidx.exifinterface.media.ExifInterface, r
         for (tag in tagsToClear) {
             exif.setAttribute(tag, null)
         }
-    } else {
-        if (request.title.isNotBlank()) {
-            exif.setAttribute("DocumentName", request.title.trim())
-            exif.setAttribute("XPTitle", request.title.trim())
-        }
-        if (!request.imageDescription.isNullOrBlank()) {
-            setExifAttributeUnicode(exif, androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION, request.imageDescription.trim())
-        }
-        if (!request.userComment.isNullOrBlank()) {
-            setExifAttributeUnicode(exif, androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT, request.userComment.trim())
-            exif.setAttribute("XPComment", request.userComment.trim())
-        }
-        if (!request.artist.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ARTIST, request.artist.trim())
-        }
-        if (!request.copyright.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_COPYRIGHT, request.copyright.trim())
-        }
-        if (!request.software.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_SOFTWARE, request.software.trim())
-        }
+    }
+    applyExifEditFields(exif, request)
+}
 
-        if (!request.cameraMake.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MAKE, request.cameraMake.trim())
-        }
-        if (!request.cameraModel.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MODEL, request.cameraModel.trim())
-        }
-        if (!request.lensModel.isNullOrBlank()) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL, request.lensModel.trim())
-        }
+private fun applyExifEditFields(
+    exif: androidx.exifinterface.media.ExifInterface,
+    request: ExifEditRequest,
+) {
+    if (request.title.isNotBlank()) {
+        exif.setAttribute("DocumentName", request.title.trim())
+        exif.setAttribute("XPTitle", request.title.trim())
+    }
+    if (!request.imageDescription.isNullOrBlank()) {
+        setExifAttributeUnicode(exif, androidx.exifinterface.media.ExifInterface.TAG_IMAGE_DESCRIPTION, request.imageDescription.trim())
+    }
+    if (!request.userComment.isNullOrBlank()) {
+        setExifAttributeUnicode(exif, androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT, request.userComment.trim())
+        exif.setAttribute("XPComment", request.userComment.trim())
+    }
+    if (!request.artist.isNullOrBlank()) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ARTIST, request.artist.trim())
+    }
+    if (!request.copyright.isNullOrBlank()) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_COPYRIGHT, request.copyright.trim())
+    }
+    if (!request.software.isNullOrBlank()) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_SOFTWARE, request.software.trim())
+    }
 
-        if (request.dateTakenMillis > 0) {
-            val dateFormat = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
-            val offset = request.offsetTimeOriginal?.trim()
-            if (!offset.isNullOrBlank()) {
-                val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
-                dateFormat.timeZone = java.util.TimeZone.getTimeZone(prefix + offset)
-                exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
-                exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME, offset)
-            }
-            val dateStr = dateFormat.format(java.util.Date(request.dateTakenMillis))
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL, dateStr)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME, dateStr)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED, dateStr)
-        }
+    if (!request.cameraMake.isNullOrBlank()) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MAKE, request.cameraMake.trim())
+    }
+    if (!request.cameraModel.isNullOrBlank()) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MODEL, request.cameraModel.trim())
+    }
+    if (!request.lensModel.isNullOrBlank()) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL, request.lensModel.trim())
+    }
 
-        if (request.fNumber != null && request.fNumber > 0) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER, request.fNumber.toString())
+    if (request.dateTakenMillis > 0) {
+        val dateFormat = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+        val offset = request.offsetTimeOriginal?.trim()
+        if (!offset.isNullOrBlank()) {
+            val prefix = if (offset.startsWith("+") || offset.startsWith("-")) "GMT" else "GMT+"
+            dateFormat.timeZone = java.util.TimeZone.getTimeZone(prefix + offset)
+            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
+            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME, offset)
         }
-        if (request.exposureTime != null && request.exposureTime > 0) {
-            val expStr = if (request.exposureTime < 1.0) {
-                "1/${kotlin.math.round(1.0 / request.exposureTime).toLong()}"
-            } else {
-                request.exposureTime.toString()
-            }
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, expStr)
-        }
-        if (request.iso != null && request.iso > 0) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ISO_SPEED_RATINGS, request.iso.toString())
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, request.iso.toString())
-        }
-        if (request.focalLength != null && request.focalLength > 0) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH, request.focalLength.toString())
-        }
-        if (request.whiteBalance != null) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_WHITE_BALANCE, request.whiteBalance.toString())
-        }
+        val dateStr = dateFormat.format(java.util.Date(request.dateTakenMillis))
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL, dateStr)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME, dateStr)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED, dateStr)
+    }
 
-        if (request.removeGps) {
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LATITUDE, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LATITUDE_REF, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LONGITUDE, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LONGITUDE_REF, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_ALTITUDE, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_ALTITUDE_REF, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_DATESTAMP, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_TIMESTAMP, null)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_PROCESSING_METHOD, null)
-        } else if (request.latitude != null && request.longitude != null) {
-            exif.setLatLong(request.latitude, request.longitude)
+    if (request.fNumber != null && request.fNumber > 0) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER, request.fNumber.toString())
+    }
+    if (request.exposureTime != null && request.exposureTime > 0) {
+        val expStr = if (request.exposureTime < 1.0) {
+            "1/${kotlin.math.round(1.0 / request.exposureTime).toLong()}"
+        } else {
+            request.exposureTime.toString()
         }
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, expStr)
+    }
+    if (request.iso != null && request.iso > 0) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ISO_SPEED_RATINGS, request.iso.toString())
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, request.iso.toString())
+    }
+    if (request.focalLength != null && request.focalLength > 0) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH, request.focalLength.toString())
+    }
+    if (request.whiteBalance != null) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_WHITE_BALANCE, request.whiteBalance.toString())
+    }
+
+    if (request.removeGps) {
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LATITUDE, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LATITUDE_REF, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LONGITUDE, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_LONGITUDE_REF, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_ALTITUDE, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_ALTITUDE_REF, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_DATESTAMP, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_TIMESTAMP, null)
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_GPS_PROCESSING_METHOD, null)
+    } else if (request.latitude != null && request.longitude != null) {
+        exif.setLatLong(request.latitude, request.longitude)
     }
 
     val exifOrientation = when ((request.orientation % 360 + 360) % 360) {
