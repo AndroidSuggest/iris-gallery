@@ -11,7 +11,7 @@ android {
         applicationId = "com.iris.gallery"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
+        versionCode = 19
         versionName = "0.9.0"
     }
 

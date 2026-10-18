@@ -143,6 +143,7 @@ fun AppLockScreen(
     isPicker: Boolean = false,
     biometricsEnabled: Boolean = true,
     onVerifyPin: (String) -> Boolean,
+    pinLockoutRemainingMs: () -> Long = { 0L },
     onUnlocked: () -> Unit
 ) {
     val context = LocalContext.current
@@ -207,6 +208,13 @@ fun AppLockScreen(
         }
     }
 
+    fun showPinLockout() {
+        val remainingMs = pinLockoutRemainingMs()
+        errorMessage = context.getString(R.string.app_lock_too_many_attempts, ((remainingMs + 999L) / 1000L).toInt().coerceAtLeast(1))
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        enteredPin = ""
+    }
+
     fun handleDigit(digit: String) {
         if (isUnlockedSuccess) return
         if (enteredPin.length < 6) {
@@ -216,6 +224,8 @@ fun AppLockScreen(
             if (nextPin.length >= 4) {
                 if (onVerifyPin(nextPin)) {
                     performUnlock()
+                } else if (pinLockoutRemainingMs() > 0L) {
+                    showPinLockout()
                 } else if (nextPin.length == 6) {
                     triggerWrongPinAnimation()
                 }

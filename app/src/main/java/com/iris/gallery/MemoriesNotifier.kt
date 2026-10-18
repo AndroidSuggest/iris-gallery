@@ -10,6 +10,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.MediaStore
+import android.util.Log
 import android.util.Size
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -87,10 +89,14 @@ class MemoriesReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val today = LocalDate.now()
-                val memories = MediaRepository(context).loadImages().filter {
-                    val date = Instant.ofEpochMilli(it.dateTaken).atZone(ZoneId.systemDefault()).toLocalDate()
-                    date.year < today.year && date.month == today.month && date.dayOfMonth == today.dayOfMonth
-                }
+                val locked = context.getSharedPreferences("library_preferences", Context.MODE_PRIVATE)
+                    .getStringSet("locked", emptySet()).orEmpty().mapNotNullTo(hashSetOf(), String::toLongOrNull)
+                val memories = MediaRepository(context).loadImages()
+                    .filterNot { it.id in locked }
+                    .filter {
+                        val date = Instant.ofEpochMilli(it.dateTaken).atZone(ZoneId.systemDefault()).toLocalDate()
+                        date.year < today.year && date.month == today.month && date.dayOfMonth == today.dayOfMonth
+                    }
                 if (memories.isEmpty()) return@launch
                 val manager = context.getSystemService(NotificationManager::class.java)
                 manager.createNotificationChannel(NotificationChannel(MemoriesNotifications.CHANNEL,
@@ -99,7 +105,17 @@ class MemoriesReceiver : BroadcastReceiver() {
                 })
                 val phrases = listOf("From this day", "A look back", "Remember this day?", "Your story from today")
                 val title = phrases[today.dayOfYear % phrases.size]
-                val preview = runCatching { context.contentResolver.loadThumbnail(memories.first().uri, Size(720, 480), null) }.getOrNull()
+                val first = memories.first()
+                val preview = runCatching {
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        context.contentResolver.loadThumbnail(first.uri, Size(720, 480), null)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        MediaStore.Images.Thumbnails.getThumbnail(
+                            context.contentResolver, first.id, MediaStore.Images.Thumbnails.MINI_KIND, null
+                        )
+                    }
+                }.getOrNull()
                 val open = PendingIntent.getActivity(context, 4103, Intent(context, MainActivity::class.java)
                     .putExtra("open_memories", true)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
@@ -113,9 +129,12 @@ class MemoriesReceiver : BroadcastReceiver() {
                     .setSmallIcon(R.drawable.ic_notification).setContentTitle(title)
                     .setContentText(text)
                     .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(true)
+                    .setVisibility(NotificationCompat.VISIBILITY_SECRET)
                     .apply { if (preview != null) setStyle(NotificationCompat.BigPictureStyle().bigPicture(preview).bigLargeIcon(null as android.graphics.Bitmap?)) }
                     .build()
                 manager.notify(4104, notification)
+            } catch (error: Throwable) {
+                Log.e("IrisMemories", "notification failed", error)
             } finally { pending.finish() }
         }
     }

@@ -630,8 +630,8 @@ fun ExifEditorSheet(
                 Button(
                     onClick = {
                         val parsedTime = if (dateTakenStr.isNotBlank()) {
-                            runCatching { dateFormat.parse(dateTakenStr)?.time }.getOrNull() ?: image.dateTaken
-                        } else 0L
+                            runCatching { dateFormat.parse(dateTakenStr)?.time }.getOrNull()?.takeIf { it > 0 } ?: image.dateTaken
+                        } else image.dateTaken
                         val parsedIso = isoStr.toIntOrNull()
                         val parsedAperture = apertureStr.toDoubleOrNull()
                         val parsedFocal = focalLengthStr.toDoubleOrNull()

@@ -15,7 +15,9 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import kotlin.math.atan2
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 enum class EditorTool { ADJUST, CROP, TRANSFORM, RESIZE, DRAW, SHAPE, TEXT, PIXELATE, BLUR }
 enum class BrushEffect { PIXELATE, BLUR, COLOR }
@@ -39,8 +41,16 @@ data class TextOverlay(
     var y: Float = 0.5f,
     var color: Int = android.graphics.Color.WHITE,
     var bgColor: Int = android.graphics.Color.argb(160, 0, 0, 0),
-    var textSizeRatio: Float = 0.05f
+    var textSizeRatio: Float = 0.05f,
+    var rotationDeg: Float = 0f
 )
+
+private enum class TextGesture { NONE, DRAG, RESIZE, ROTATE }
+
+private const val ROTATION_HANDLE_GAP_DP = 30f
+private const val ROTATION_SNAP_DEG = 5f
+private const val TEXT_SIZE_MIN = 0.02f
+private const val TEXT_SIZE_MAX = 0.12f
 
 class EditorSession {
     val crop = RectF(0f, 0f, 1f, 1f)
@@ -59,8 +69,13 @@ class EditorCanvasView(context: Context) : View(context) {
     var erasing = false
     var selectedTextId: Long? = null; set(value) { field = value; invalidate() }
     var onTextSelected: ((TextOverlay?) -> Unit)? = null
+    var onTextTransformed: ((TextOverlay) -> Unit)? = null
     private var isDraggingText = false
     private var draggedTextOverlay: TextOverlay? = null
+    private var textGesture = TextGesture.NONE
+    private var resizeStartSize = 0f
+    private var resizeStartDist = 1f
+    private var rotateOffsetDeg = 0f
     var colorFilter: android.graphics.ColorFilter? = null; set(value) { field = value; invalidate() }
     private var bitmap: Bitmap? = null
     private var composite: Bitmap? = null
@@ -245,6 +260,10 @@ class EditorCanvasView(context: Context) : View(context) {
         drawTextOverlays(canvas)
         canvas.restore()
 
+        if (tool == EditorTool.TEXT) {
+            session.textOverlays.find { it.id == selectedTextId }?.let { drawTextSelectionChrome(canvas, it) }
+        }
+
         if (straightenAngle != 0f) {
             canvas.restore()
         }
@@ -316,20 +335,53 @@ class EditorCanvasView(context: Context) : View(context) {
         canvas.drawPath(path, strokePaint)
     }
 
+    private fun textOverlayPaint(overlay: TextOverlay): Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = overlay.color
+        textSize = overlayPxSize(overlay).coerceAtLeast(14f)
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    private fun overlayPxSize(overlay: TextOverlay): Float = (overlay.textSizeRatio / visibleWidth()) * destination.width()
+
+    private fun overlayCenterView(overlay: TextOverlay): Pair<Float, Float> =
+        (destination.left + (overlay.x - visibleLeft()) / visibleWidth() * destination.width()) to
+            (destination.top + (overlay.y - visibleTop()) / visibleHeight() * destination.height())
+
+    private fun overlayHalfExtents(overlay: TextOverlay): Pair<Float, Float> {
+        val paint = textOverlayPaint(overlay)
+        val bounds = Rect()
+        paint.getTextBounds(overlay.text, 0, overlay.text.length, bounds)
+        return (bounds.width() / 2f + paint.textSize * 0.4f) to (bounds.height() / 2f + paint.textSize * 0.25f)
+    }
+
+    private fun overlayLocalPoint(overlay: TextOverlay, viewX: Float, viewY: Float): Pair<Float, Float> {
+        val center = overlayCenterView(overlay)
+        val dx = viewX - center.first
+        val dy = viewY - center.second
+        if (overlay.rotationDeg == 0f) return dx to dy
+        val rad = Math.toRadians(-overlay.rotationDeg.toDouble())
+        val cos = Math.cos(rad).toFloat()
+        val sin = Math.sin(rad).toFloat()
+        return (dx * cos - dy * sin) to (dx * sin + dy * cos)
+    }
+
+    private fun overlayContainsPoint(overlay: TextOverlay, viewX: Float, viewY: Float, pad: Float): Boolean {
+        val local = overlayLocalPoint(overlay, viewX, viewY)
+        val (halfW, halfH) = overlayHalfExtents(overlay)
+        return kotlin.math.abs(local.first) <= halfW + pad && kotlin.math.abs(local.second) <= halfH + pad
+    }
+
+    private fun normalizeAngle(deg: Float): Float = ((deg + 180f) % 360f + 360f) % 360f - 180f
+
     private fun drawTextOverlays(canvas: Canvas) {
         if (session.textOverlays.isEmpty()) return
         session.textOverlays.forEach { overlay ->
-            val vx = destination.left + (overlay.x - visibleLeft()) / visibleWidth() * destination.width()
-            val vy = destination.top + (overlay.y - visibleTop()) / visibleHeight() * destination.height()
-            val pxSize = (overlay.textSizeRatio / visibleWidth()) * destination.width()
-            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = overlay.color
-                textSize = pxSize.coerceAtLeast(14f)
-                textAlign = Paint.Align.CENTER
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-            }
+            val (vx, vy) = overlayCenterView(overlay)
+            val textPaint = textOverlayPaint(overlay)
             val bounds = Rect()
             textPaint.getTextBounds(overlay.text, 0, overlay.text.length, bounds)
+            val pxSize = textPaint.textSize
             val paddingX = pxSize * 0.4f
             val paddingY = pxSize * 0.25f
             val bgRect = RectF(
@@ -338,6 +390,8 @@ class EditorCanvasView(context: Context) : View(context) {
                 vx + bounds.width() / 2f + paddingX,
                 vy + bounds.height() / 2f + paddingY
             )
+            canvas.save()
+            canvas.rotate(overlay.rotationDeg, vx, vy)
             if (overlay.bgColor != 0) {
                 val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = overlay.bgColor
@@ -345,17 +399,63 @@ class EditorCanvasView(context: Context) : View(context) {
                 }
                 canvas.drawRoundRect(bgRect, pxSize * 0.25f, pxSize * 0.25f, bgPaint)
             }
-            if (tool == EditorTool.TEXT && overlay.id == selectedTextId) {
-                val selectPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.WHITE
-                    style = Paint.Style.STROKE
-                    strokeWidth = 3f
-                }
-                canvas.drawRoundRect(bgRect, pxSize * 0.25f, pxSize * 0.25f, selectPaint)
-            }
             val textY = vy + bounds.height() / 2f - bounds.bottom
             canvas.drawText(overlay.text, vx, textY, textPaint)
+            canvas.restore()
         }
+    }
+
+    private fun drawTextSelectionChrome(canvas: Canvas, overlay: TextOverlay) {
+        val (vx, vy) = overlayCenterView(overlay)
+        val textPaint = textOverlayPaint(overlay)
+        val bounds = Rect()
+        textPaint.getTextBounds(overlay.text, 0, overlay.text.length, bounds)
+        val pxSize = textPaint.textSize
+        val halfW = bounds.width() / 2f + pxSize * 0.4f
+        val halfH = bounds.height() / 2f + pxSize * 0.25f
+        val density = resources.displayMetrics.density
+        val handleR = 7f * density
+        val rotHandleR = 9f * density
+        val gap = ROTATION_HANDLE_GAP_DP * density
+
+        val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f * density
+        }
+        val handleFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        val handleStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(90, 0, 0, 0)
+            style = Paint.Style.STROKE
+            strokeWidth = 1.5f * density
+        }
+        val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(210, 0, 0, 0)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * density
+            strokeCap = Paint.Cap.ROUND
+        }
+
+        canvas.save()
+        canvas.rotate(overlay.rotationDeg, vx, vy)
+        val cornerRadius = pxSize * 0.25f
+        canvas.drawRoundRect(RectF(vx - halfW, vy - halfH, vx + halfW, vy + halfH), cornerRadius, cornerRadius, framePaint)
+
+        val rotY = vy - halfH - gap
+        canvas.drawLine(vx, vy - halfH, vx, rotY, framePaint)
+        canvas.drawCircle(vx, rotY, rotHandleR, handleFill)
+        canvas.drawCircle(vx, rotY, rotHandleR, handleStroke)
+        val arcR = rotHandleR * 0.55f
+        canvas.drawArc(RectF(vx - arcR, rotY - arcR, vx + arcR, rotY + arcR), -60f, 300f, false, glyphPaint)
+
+        listOf(-halfW to -halfH, halfW to -halfH, halfW to halfH, -halfW to halfH).forEach { (dx, dy) ->
+            canvas.drawCircle(vx + dx, vy + dy, handleR, handleFill)
+            canvas.drawCircle(vx + dx, vy + dy, handleR, handleStroke)
+        }
+        canvas.restore()
     }
 
     fun addTextOverlay(text: String, color: Int, bgColor: Int, sizeRatio: Float): TextOverlay {
@@ -379,6 +479,12 @@ class EditorCanvasView(context: Context) : View(context) {
         overlay.color = color
         overlay.bgColor = bgColor
         overlay.textSizeRatio = sizeRatio
+        invalidate()
+    }
+
+    fun setSelectedTextRotation(deg: Float) {
+        val overlay = session.textOverlays.find { it.id == selectedTextId } ?: return
+        overlay.rotationDeg = normalizeAngle(deg)
         invalidate()
     }
 
@@ -438,6 +544,7 @@ class EditorCanvasView(context: Context) : View(context) {
                 isDraggingText = false
                 draggedTextOverlay = null
             }
+            textGesture = TextGesture.NONE
             val midX = (event.getX(0) + event.getX(1)) / 2f
             val midY = (event.getY(0) + event.getY(1)) / 2f
             if (isTwoFingerGesture && lastMidX != null && lastMidY != null) {
@@ -469,13 +576,13 @@ class EditorCanvasView(context: Context) : View(context) {
         val canvasX = cx + (unpannedX - cx) / userZoom
         val canvasY = cy + (unpannedY - cy) / userZoom
 
-        if (event.action == MotionEvent.ACTION_DOWN) {
+        if (event.action == MotionEvent.ACTION_DOWN && tool != EditorTool.TEXT) {
             val touchSlop = if (tool == EditorTool.CROP) 48f * resources.displayMetrics.density else 0f
             val extendedDest = RectF(destination).apply { inset(-touchSlop, -touchSlop) }
             if (!extendedDest.contains(canvasX, canvasY)) return true
         }
 
-        val point = viewToNormalized(event.x, event.y)
+        val point = viewToNormalized(event.x, event.y, clampToVisible = tool != EditorTool.TEXT)
         when (tool) {
             EditorTool.CROP -> handleCropTouch(event, point, canvasX, canvasY)
             EditorTool.PIXELATE, EditorTool.BLUR, EditorTool.DRAW -> handleBrushTouch(event, point)
@@ -576,35 +683,96 @@ class EditorCanvasView(context: Context) : View(context) {
     }
 
     private fun handleTextTouch(event: MotionEvent, point: BrushPoint) {
+        val viewX = destination.left + (point.x - visibleLeft()) / visibleWidth() * destination.width()
+        val viewY = destination.top + (point.y - visibleTop()) / visibleHeight() * destination.height()
+        val density = resources.displayMetrics.density
+
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                val hit = session.textOverlays.findLast { overlay ->
-                    val dist = hypot(overlay.x - point.x, overlay.y - point.y)
-                    dist < (overlay.textSizeRatio * 2.5f).coerceAtLeast(0.08f)
+                val selected = session.textOverlays.find { it.id == selectedTextId }
+                var consumed = false
+                if (selected != null) {
+                    val center = overlayCenterView(selected)
+                    val (halfW, halfH) = overlayHalfExtents(selected)
+                    val local = overlayLocalPoint(selected, viewX, viewY)
+                    val slop = 26f * density
+                    val rotHandleLocalY = -halfH - ROTATION_HANDLE_GAP_DP * density
+                    if (hypot(local.first, local.second - rotHandleLocalY) <= slop) {
+                        textGesture = TextGesture.ROTATE
+                        val pointerAngle = Math.toDegrees(
+                            atan2((viewY - center.second).toDouble(), (viewX - center.first).toDouble())
+                        ).toFloat()
+                        rotateOffsetDeg = selected.rotationDeg - pointerAngle
+                        consumed = true
+                    } else if (listOf(-halfW to -halfH, halfW to -halfH, halfW to halfH, -halfW to halfH)
+                            .any { (cx, cy) -> hypot(local.first - cx, local.second - cy) <= slop }) {
+                        textGesture = TextGesture.RESIZE
+                        resizeStartSize = selected.textSizeRatio
+                        resizeStartDist = hypot(viewX - center.first, viewY - center.second).coerceAtLeast(4f * density)
+                        consumed = true
+                    } else if (kotlin.math.abs(local.first) <= halfW + 12f * density &&
+                        kotlin.math.abs(local.second) <= halfH + 12f * density) {
+                        textGesture = TextGesture.DRAG
+                        isDraggingText = true
+                        draggedTextOverlay = selected
+                        consumed = true
+                    }
                 }
-                if (hit != null) {
-                    selectedTextId = hit.id
-                    draggedTextOverlay = hit
-                    isDraggingText = true
-                    onTextSelected?.invoke(hit)
-                } else {
-                    selectedTextId = null
-                    draggedTextOverlay = null
-                    isDraggingText = false
-                    onTextSelected?.invoke(null)
+                if (!consumed) {
+                    val hit = session.textOverlays.findLast { overlay ->
+                        overlayContainsPoint(overlay, viewX, viewY, 12f * density)
+                    }
+                    if (hit != null) {
+                        selectedTextId = hit.id
+                        draggedTextOverlay = hit
+                        isDraggingText = true
+                        textGesture = TextGesture.DRAG
+                        onTextSelected?.invoke(hit)
+                    } else {
+                        selectedTextId = null
+                        draggedTextOverlay = null
+                        isDraggingText = false
+                        textGesture = TextGesture.NONE
+                        onTextSelected?.invoke(null)
+                    }
                 }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
-                if (isDraggingText && draggedTextOverlay != null) {
-                    draggedTextOverlay?.x = point.x.coerceIn(0.02f, 0.98f)
-                    draggedTextOverlay?.y = point.y.coerceIn(0.02f, 0.98f)
-                    invalidate()
+                val overlay = draggedTextOverlay ?: session.textOverlays.find { it.id == selectedTextId } ?: return
+                when (textGesture) {
+                    TextGesture.DRAG -> {
+                        overlay.x = point.x.coerceIn(0.02f, 0.98f)
+                        overlay.y = point.y.coerceIn(0.02f, 0.98f)
+                    }
+                    TextGesture.RESIZE -> {
+                        val center = overlayCenterView(overlay)
+                        val dist = hypot(viewX - center.first, viewY - center.second)
+                        overlay.textSizeRatio = (resizeStartSize * (dist / resizeStartDist))
+                            .coerceIn(TEXT_SIZE_MIN, TEXT_SIZE_MAX)
+                    }
+                    TextGesture.ROTATE -> {
+                        val center = overlayCenterView(overlay)
+                        val pointerAngle = Math.toDegrees(
+                            atan2((viewY - center.second).toDouble(), (viewX - center.first).toDouble())
+                        ).toFloat()
+                        var angle = normalizeAngle(pointerAngle + rotateOffsetDeg)
+                        val snapped = (angle / 90f).roundToInt() * 90f
+                        if (kotlin.math.abs(angle - snapped) <= ROTATION_SNAP_DEG) angle = normalizeAngle(snapped)
+                        overlay.rotationDeg = angle
+                    }
+                    TextGesture.NONE -> return
                 }
+                invalidate()
+                onTextTransformed?.invoke(overlay)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (textGesture != TextGesture.NONE) {
+                    session.textOverlays.find { it.id == selectedTextId }?.let { onTextTransformed?.invoke(it) }
+                }
                 isDraggingText = false
                 draggedTextOverlay = null
+                textGesture = TextGesture.NONE
             }
         }
     }
@@ -648,7 +816,8 @@ class EditorCanvasView(context: Context) : View(context) {
                             val rawH = session.crop.bottom - point.y
                             val maxW = session.crop.right.coerceIn(0.08f, 1f)
                             val maxH = session.crop.bottom.coerceIn(0.08f, 1f)
-                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(0.08f, minOf(maxW, maxH * normalizedAspect))
+                            val cap = minOf(maxW, maxH * normalizedAspect)
+                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(minOf(0.08f, cap), cap)
                             val h = w / normalizedAspect
                             session.crop.left = session.crop.right - w
                             session.crop.top = session.crop.bottom - h
@@ -658,7 +827,8 @@ class EditorCanvasView(context: Context) : View(context) {
                             val rawH = session.crop.bottom - point.y
                             val maxW = (1f - session.crop.left).coerceIn(0.08f, 1f)
                             val maxH = session.crop.bottom.coerceIn(0.08f, 1f)
-                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(0.08f, minOf(maxW, maxH * normalizedAspect))
+                            val cap = minOf(maxW, maxH * normalizedAspect)
+                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(minOf(0.08f, cap), cap)
                             val h = w / normalizedAspect
                             session.crop.right = session.crop.left + w
                             session.crop.top = session.crop.bottom - h
@@ -668,7 +838,8 @@ class EditorCanvasView(context: Context) : View(context) {
                             val rawH = point.y - session.crop.top
                             val maxW = (1f - session.crop.left).coerceIn(0.08f, 1f)
                             val maxH = (1f - session.crop.top).coerceIn(0.08f, 1f)
-                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(0.08f, minOf(maxW, maxH * normalizedAspect))
+                            val cap = minOf(maxW, maxH * normalizedAspect)
+                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(minOf(0.08f, cap), cap)
                             val h = w / normalizedAspect
                             session.crop.right = session.crop.left + w
                             session.crop.bottom = session.crop.top + h
@@ -678,7 +849,8 @@ class EditorCanvasView(context: Context) : View(context) {
                             val rawH = point.y - session.crop.top
                             val maxW = session.crop.right.coerceIn(0.08f, 1f)
                             val maxH = (1f - session.crop.top).coerceIn(0.08f, 1f)
-                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(0.08f, minOf(maxW, maxH * normalizedAspect))
+                            val cap = minOf(maxW, maxH * normalizedAspect)
+                            val w = maxOf(rawW, rawH * normalizedAspect).coerceIn(minOf(0.08f, cap), cap)
                             val h = w / normalizedAspect
                             session.crop.left = session.crop.right - w
                             session.crop.bottom = session.crop.top + h
@@ -730,7 +902,7 @@ class EditorCanvasView(context: Context) : View(context) {
     private fun cropViewRect() = RectF(destination.left + session.crop.left * destination.width(),
         destination.top + session.crop.top * destination.height(), destination.left + session.crop.right * destination.width(),
         destination.top + session.crop.bottom * destination.height())
-    private fun viewToNormalized(x: Float, y: Float): BrushPoint {
+    private fun viewToNormalized(x: Float, y: Float, clampToVisible: Boolean = true): BrushPoint {
         val cx = width / 2f
         val cy = height / 2f
         val unpannedX = x - userPanX
@@ -757,8 +929,10 @@ class EditorCanvasView(context: Context) : View(context) {
         }
 
         return BrushPoint(
-            visibleLeft() + ((canvasX - destination.left) / destination.width()).coerceIn(0f, 1f) * visibleWidth(),
-            visibleTop() + ((canvasY - destination.top) / destination.height()).coerceIn(0f, 1f) * visibleHeight()
+            visibleLeft() + (if (clampToVisible) ((canvasX - destination.left) / destination.width()).coerceIn(0f, 1f)
+                else (canvasX - destination.left) / destination.width()) * visibleWidth(),
+            visibleTop() + (if (clampToVisible) ((canvasY - destination.top) / destination.height()).coerceIn(0f, 1f)
+                else (canvasY - destination.top) / destination.height()) * visibleHeight()
         )
     }
     private fun fitRect(source: Bitmap, out: RectF, cropped: Boolean) {

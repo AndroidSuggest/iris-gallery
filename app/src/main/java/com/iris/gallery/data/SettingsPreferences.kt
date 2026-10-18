@@ -167,6 +167,8 @@ data class SettingsState(
     val appLockEnabled: Boolean = false,
     val appLockPinHash: String = "",
     val appLockPinSalt: String = "",
+    val appLockFailedAttempts: Int = 0,
+    val appLockLockoutUntil: Long = 0L,
     val appLockBiometricsEnabled: Boolean = true,
     val confirmDelete: Boolean = false,
     val deleteMode: DeleteMode = DeleteMode.TRASH,
@@ -266,31 +268,114 @@ class SettingsPreferences(context: Context) {
     fun setSecureSharingMode(mode: SecureSharingMode) = update { copy(secureSharingMode = mode) }
     fun setDismissedSecureSharingTip(dismissed: Boolean) = update { copy(dismissedSecureSharingTip = dismissed) }
 
+    /** PBKDF2 iteration count for new PIN hashes. */
+    private val pinPbkdf2Iterations = 120_000
+
     fun setPin(pin: String) {
         val salt = java.util.UUID.randomUUID().toString()
-        val hash = hashPin(pin, salt)
-        update { copy(appLockPinHash = hash, appLockPinSalt = salt, appLockEnabled = true) }
+        val hash = hashPin(pin, salt) ?: legacyHashPin(pin, salt)
+        update {
+            copy(
+                appLockPinHash = hash,
+                appLockPinSalt = salt,
+                appLockEnabled = true,
+                appLockFailedAttempts = 0,
+                appLockLockoutUntil = 0L,
+            )
+        }
     }
 
     fun verifyPin(pin: String): Boolean {
         val current = _state.value
-        if (current.appLockPinHash.isEmpty()) return false
-        val computed = hashPin(pin, current.appLockPinSalt)
-        return computed == current.appLockPinHash
+        val stored = current.appLockPinHash
+        if (stored.isEmpty()) return false
+        if (current.appLockLockoutUntil > System.currentTimeMillis()) return false
+        val verified = if (stored.startsWith("pbkdf2:")) {
+            val parts = stored.split(":")
+            val iterations = parts.getOrNull(1)?.toIntOrNull() ?: return false
+            hashPinWithIterations(pin, current.appLockPinSalt, iterations) == stored
+        } else {
+            legacyHashPin(pin, current.appLockPinSalt) == stored
+        }
+        if (verified) {
+            if (current.appLockFailedAttempts != 0 || current.appLockLockoutUntil != 0L || !stored.startsWith("pbkdf2:")) {
+                // Reset throttling and silently upgrade legacy hashes while the PIN is known.
+                val upgraded = if (stored.startsWith("pbkdf2:")) stored else (hashPin(pin, current.appLockPinSalt) ?: stored)
+                update {
+                    copy(
+                        appLockPinHash = upgraded,
+                        appLockFailedAttempts = 0,
+                        appLockLockoutUntil = 0L,
+                    )
+                }
+            }
+            return true
+        }
+        registerPinFailure(current)
+        return false
+    }
+
+    fun pinLockoutRemainingMs(): Long {
+        return (_state.value.appLockLockoutUntil - System.currentTimeMillis()).coerceAtLeast(0L)
+    }
+
+    private fun registerPinFailure(current: SettingsState) {
+        val attempts = current.appLockFailedAttempts + 1
+        val lockoutMs = when {
+            attempts < 5 -> 0L
+            attempts < 10 -> 30_000L
+            attempts < 15 -> 120_000L
+            else -> 600_000L
+        }
+        update {
+            copy(
+                appLockFailedAttempts = attempts,
+                appLockLockoutUntil = if (lockoutMs > 0L) System.currentTimeMillis() + lockoutMs else 0L,
+            )
+        }
     }
 
     fun removePin() {
-        update { copy(appLockPinHash = "", appLockPinSalt = "", appLockEnabled = false) }
+        update {
+            copy(
+                appLockPinHash = "",
+                appLockPinSalt = "",
+                appLockEnabled = false,
+                appLockFailedAttempts = 0,
+                appLockLockoutUntil = 0L,
+            )
+        }
     }
 
-    private fun hashPin(pin: String, salt: String): String {
+    private fun hashPin(pin: String, salt: String): String? {
+        return hashPinWithIterations(pin, salt, pinPbkdf2Iterations)
+    }
+
+    private fun hashPinWithIterations(pin: String, salt: String, iterations: Int): String? {
+        return runCatching {
+            val spec = javax.crypto.spec.PBEKeySpec(pin.toCharArray(), salt.toByteArray(Charsets.UTF_8), iterations, 256)
+            try {
+                val key = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+                "pbkdf2:$iterations:" + key.joinToString("") { "%02x".format(it) }
+            } finally {
+                spec.clearPassword()
+            }
+        }.getOrNull()
+    }
+
+    private fun legacyHashPin(pin: String, salt: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         val bytes = digest.digest("$salt:$pin".toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
     fun resetToDefaults() {
-        _state.value = SettingsState()
+        val security = _state.value
+        _state.value = SettingsState().copy(
+            appLockPinHash = security.appLockPinHash,
+            appLockPinSalt = security.appLockPinSalt,
+            appLockEnabled = security.appLockEnabled,
+        )
         write(_state.value)
     }
 
@@ -355,6 +440,8 @@ class SettingsPreferences(context: Context) {
             appLockEnabled = prefs.getBoolean("app_lock_enabled", false),
             appLockPinHash = prefs.getString("app_lock_pin_hash", "").orEmpty(),
             appLockPinSalt = prefs.getString("app_lock_pin_salt", "").orEmpty(),
+            appLockFailedAttempts = prefs.getInt("app_lock_failed_attempts", 0),
+            appLockLockoutUntil = prefs.getLong("app_lock_lockout_until", 0L),
             appLockBiometricsEnabled = prefs.getBoolean("app_lock_biometrics_enabled", true),
             confirmDelete = prefs.getBoolean("confirm_delete", false),
             deleteMode = runCatching { DeleteMode.valueOf(prefs.getString("delete_mode", null).orEmpty()) }.getOrDefault(DeleteMode.TRASH),
@@ -417,6 +504,8 @@ class SettingsPreferences(context: Context) {
             .putBoolean("app_lock_enabled", state.appLockEnabled)
             .putString("app_lock_pin_hash", state.appLockPinHash)
             .putString("app_lock_pin_salt", state.appLockPinSalt)
+            .putInt("app_lock_failed_attempts", state.appLockFailedAttempts)
+            .putLong("app_lock_lockout_until", state.appLockLockoutUntil)
             .putBoolean("app_lock_biometrics_enabled", state.appLockBiometricsEnabled)
             .putBoolean("confirm_delete", state.confirmDelete)
             .putString("delete_mode", state.deleteMode.name)

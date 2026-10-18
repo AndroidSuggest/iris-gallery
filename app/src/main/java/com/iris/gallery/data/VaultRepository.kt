@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.AtomicFile
+import android.webkit.MimeTypeMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,14 @@ data class VaultMoveResult(
     val vaultedMedia: List<MediaImage>,
     val originalMedia: List<MediaImage>,
     val silentSuccess: Boolean = false,
+    val indexWriteFailed: Boolean = false,
+)
+
+private const val VAULT_INDEX_CHECKPOINT_INTERVAL = 20
+private const val VAULT_RECOVERED_BUCKET = "Recovered"
+private val VAULT_VIDEO_EXTENSIONS = setOf(
+    "mp4", "mkv", "webm", "avi", "mov", "3gp", "3g2", "m4v",
+    "mpeg", "mpg", "ts", "flv", "wmv", "mts", "m2ts"
 )
 
 class VaultRepository(private val context: Context) {
@@ -105,16 +114,78 @@ class VaultRepository(private val context: Context) {
         return mediaList
     }
 
+    /**
+     * Adopts files that exist in the vault directory but are missing from the index. These are
+     * leftovers from vault moves that were interrupted before the index was persisted; without
+     * this pass they would stay invisible to the app forever.
+     *
+     * Returns the number of files recovered. Aborts (and returns 0) when the index cannot be read,
+     * so a corrupt index can never cause every file to be adopted and duplicates to be created.
+     */
+    suspend fun recoverOrphanedItems(): Int = withContext(Dispatchers.IO) {
+        val currentItems = (readIndexStrict() ?: return@withContext 0).toMutableList()
+        val knownNames = currentItems.mapTo(mutableSetOf()) { it.vaultFileName }
+        val usedIds = currentItems.mapTo(mutableSetOf()) { it.id }
+        val orphans = (vaultDir.listFiles() ?: emptyArray())
+            .filter { file ->
+                file.isFile && file.name != ".nomedia" && file.name !in knownNames && file.length() > 0
+            }
+            .sortedBy { it.name }
+        if (orphans.isEmpty()) return@withContext 0
+
+        var recovered = 0
+        for (file in orphans) {
+            val parsedId = parseVaultFileId(file.name)
+            val uniqueId = if (parsedId != null && parsedId !in usedIds) parsedId else generateUniqueId(currentItems)
+            usedIds.add(uniqueId)
+            val isVideo = isVideoFileName(file.name)
+            currentItems.add(
+                VaultItem(
+                    id = uniqueId,
+                    vaultFileName = file.name,
+                    originalName = stripVaultPrefix(file.name),
+                    originalPath = "",
+                    originalBucketName = VAULT_RECOVERED_BUCKET,
+                    originalBucketId = 0L,
+                    dateTaken = file.lastModified(),
+                    dateLocked = System.currentTimeMillis(),
+                    width = 0,
+                    height = 0,
+                    isVideo = isVideo,
+                    durationMs = 0L,
+                    mimeType = mimeTypeForVaultFile(file.name, isVideo),
+                    sizeBytes = file.length(),
+                    orientation = 0,
+                    title = "",
+                    description = "",
+                )
+            )
+            recovered++
+        }
+
+        if (!persistIndexVerified(currentItems)) {
+            return@withContext 0
+        }
+        loadVaultItems()
+        recovered
+    }
+
     suspend fun moveToVault(mediaList: List<MediaImage>): VaultMoveResult = withContext(Dispatchers.IO) {
         val currentItems = readIndex().toMutableList()
         val vaultedList = mutableListOf<MediaImage>()
         val originalList = mutableListOf<MediaImage>()
         val hasManagerAccess = hasAllFilesAccess()
+        var indexWriteFailed = false
+        var copiesSinceCheckpoint = 0
 
         for (item in mediaList) {
             val uniqueId = generateUniqueId(currentItems)
-            val cleanName = sanitizeFileName(item.name.ifBlank { "media_${uniqueId}" })
-            val vaultFileName = "${uniqueId}_${cleanName}"
+            val prefix = "${uniqueId}_"
+            val cleanName = truncateToFileSystemLimit(
+                prefix,
+                sanitizeFileName(item.name.ifBlank { "media_$uniqueId" })
+            )
+            val vaultFileName = prefix + cleanName
             val targetFile = File(vaultDir, vaultFileName)
 
             val copySuccess = runCatching {
@@ -167,10 +238,45 @@ class VaultRepository(private val context: Context) {
                 )
                 vaultedList.add(media)
                 originalList.add(item)
+                copiesSinceCheckpoint++
+            }
+
+            // Persist the index periodically so a process kill mid-batch cannot orphan
+            // already-copied files.
+            if (copiesSinceCheckpoint >= VAULT_INDEX_CHECKPOINT_INTERVAL) {
+                if (!writeIndex(currentItems)) {
+                    indexWriteFailed = true
+                    break
+                }
+                copiesSinceCheckpoint = 0
             }
         }
 
-    fun deleteFromStorage(item: MediaImage): Boolean {
+        if (!indexWriteFailed) {
+            indexWriteFailed = !persistIndexVerified(currentItems)
+        }
+
+        // Originals are only ever removed after the index is safely on disk.
+        var silentSuccess = false
+        if (!indexWriteFailed && hasManagerAccess && vaultedList.isNotEmpty()) {
+            val allDeleted = originalList.all { item ->
+                deleteFromStorage(item)
+            }
+            if (allDeleted) {
+                silentSuccess = true
+            }
+        }
+
+        loadVaultItems()
+        VaultMoveResult(
+            vaultedMedia = vaultedList,
+            originalMedia = originalList,
+            silentSuccess = silentSuccess,
+            indexWriteFailed = indexWriteFailed
+        )
+    }
+
+    private fun deleteFromStorage(item: MediaImage): Boolean {
         var deleted = false
         if (item.path.isNotBlank()) {
             val file = File(item.path)
@@ -180,7 +286,12 @@ class VaultRepository(private val context: Context) {
                 deleted = fDel || cDel
             }
         }
-        val mediaStoreUri = if (item.id > 0) {
+        val mediaVolume = if (item.uri.authority == "media") {
+            item.uri.pathSegments.firstOrNull()?.takeIf { it.isNotBlank() } ?: "external"
+        } else "external"
+        val mediaStoreUri = if (item.uri.authority == "media") {
+            item.uri.buildUpon().clearQuery().build()
+        } else if (item.id > 0) {
             if (item.isVideo) ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, item.id)
             else ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id)
         } else {
@@ -192,7 +303,7 @@ class VaultRepository(private val context: Context) {
         deleted = deleted || contentDeleted
 
         if (item.id > 0) {
-            val table = if (item.isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            val table = if (item.isVideo) MediaStore.Video.Media.getContentUri(mediaVolume) else MediaStore.Images.Media.getContentUri(mediaVolume)
             val idDeleted = runCatching {
                 context.contentResolver.delete(table, "${MediaStore.MediaColumns._ID}=?", arrayOf(item.id.toString())) > 0
             }.getOrDefault(false)
@@ -207,32 +318,17 @@ class VaultRepository(private val context: Context) {
         }
 
         if (item.path.isNotBlank()) {
-            val table = if (item.isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            val table = if (item.isVideo) MediaStore.Video.Media.getContentUri(mediaVolume) else MediaStore.Images.Media.getContentUri(mediaVolume)
             val pathDeleted = runCatching {
                 context.contentResolver.delete(table, "${MediaStore.MediaColumns.DATA}=?", arrayOf(item.path)) > 0
             }.getOrDefault(false)
             deleted = deleted || pathDeleted
             runCatching {
-                context.contentResolver.delete(MediaStore.Files.getContentUri("external"), "${MediaStore.MediaColumns.DATA}=?", arrayOf(item.path))
+                context.contentResolver.delete(MediaStore.Files.getContentUri(mediaVolume), "${MediaStore.MediaColumns.DATA}=?", arrayOf(item.path))
             }
             MediaScannerConnection.scanFile(context, arrayOf(item.path), null, null)
         }
         return deleted
-    }
-
-        var silentSuccess = false
-        if (hasManagerAccess && vaultedList.isNotEmpty()) {
-            val allDeleted = originalList.all { item ->
-                deleteFromStorage(item)
-            }
-            if (allDeleted) {
-                silentSuccess = true
-            }
-        }
-
-        writeIndex(currentItems)
-        loadVaultItems()
-        VaultMoveResult(vaultedMedia = vaultedList, originalMedia = originalList, silentSuccess = silentSuccess)
     }
 
     suspend fun rollbackVault(vaultedItems: List<MediaImage>) = withContext(Dispatchers.IO) {
@@ -246,6 +342,12 @@ class VaultRepository(private val context: Context) {
                 true
             } else {
                 false
+            }
+        }
+        // Also drop copies that never made it into the index (interrupted/broken batch persists).
+        for (media in vaultedItems) {
+            if (media.path.startsWith(vaultDir.absolutePath)) {
+                runCatching { File(media.path).delete() }
             }
         }
         writeIndex(currentItems)
@@ -367,13 +469,21 @@ class VaultRepository(private val context: Context) {
                     MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
                 }
                 val newUri = context.contentResolver.insert(collection, values) ?: return false
-                context.contentResolver.openOutputStream(newUri)?.use { output ->
+                val outputStream = context.contentResolver.openOutputStream(newUri)
+                if (outputStream == null) {
+                    context.contentResolver.delete(newUri, null, null)
+                    return false
+                }
+                outputStream.use { output ->
                     vaultFile.inputStream().use { input -> input.copyTo(output) }
                 }
                 values.clear()
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 values.put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                context.contentResolver.update(newUri, values, null, null)
+                if (context.contentResolver.update(newUri, values, null, null) <= 0) {
+                    context.contentResolver.delete(newUri, null, null)
+                    return false
+                }
                 true
             } else {
                 @Suppress("DEPRECATION")
@@ -386,8 +496,8 @@ class VaultRepository(private val context: Context) {
                         if (item.isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
                     ).resolve("Iris")
                 }.apply { mkdirs() }
-                val destFile = File(publicDir, item.originalName)
-                vaultFile.copyTo(destFile, overwrite = true)
+                val destFile = uniqueDestinationFile(publicDir, item.originalName)
+                vaultFile.copyTo(destFile, overwrite = false)
                 if (item.dateTaken > 0) {
                     destFile.setLastModified(item.dateTaken)
                 }
@@ -438,11 +548,65 @@ class VaultRepository(private val context: Context) {
         return id
     }
 
+    /**
+     * Keeps non-ASCII (e.g. Chinese) names intact. Only path separators and control characters are
+     * replaced, since those would break file access.
+     */
     private fun sanitizeFileName(name: String): String {
-        return name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val cleaned = buildString(name.length) {
+            for (ch in name) {
+                append(if (ch.isISOControl() || ch == '/' || ch == '\\') '_' else ch)
+            }
+        }.trim().trimEnd('.')
+        return cleaned.ifBlank { "media" }
     }
 
-    private fun readIndex(): List<VaultItem> {
+    /**
+     * Trims the name so `prefix + name` fits the 255-byte file name limit used by ext4/f2fs.
+     * The extension is preserved whenever possible.
+     */
+    private fun truncateToFileSystemLimit(prefix: String, name: String): String {
+        val maxBytes = 255 - (prefix.toByteArray(Charsets.UTF_8).size + 4)
+        if (name.toByteArray(Charsets.UTF_8).size <= maxBytes) return name
+        val dot = name.lastIndexOf('.')
+        val stem = if (dot > 0) name.substring(0, dot) else name
+        val extensionCandidate = if (dot > 0) name.substring(dot) else ""
+        val extension = if (extensionCandidate.toByteArray(Charsets.UTF_8).size <= 24) extensionCandidate else ""
+        val budget = (maxBytes - extension.toByteArray(Charsets.UTF_8).size).coerceAtLeast(1)
+        val builder = StringBuilder()
+        var bytes = 0
+        for (ch in stem) {
+            val chBytes = ch.toString().toByteArray(Charsets.UTF_8).size
+            if (bytes + chBytes > budget) break
+            builder.append(ch)
+            bytes += chBytes
+        }
+        return builder.toString().ifBlank { "media" } + extension
+    }
+
+    private fun parseVaultFileId(fileName: String): Long? {
+        val match = Regex("^(\\d{5,})_").find(fileName) ?: return null
+        return match.groupValues[1].toLongOrNull()?.takeIf { it > 0 }
+    }
+
+    private fun stripVaultPrefix(fileName: String): String {
+        val stripped = fileName.replace(Regex("^\\d{5,}_"), "")
+        return stripped.ifBlank { fileName }
+    }
+
+    private fun isVideoFileName(fileName: String): Boolean =
+        fileName.substringAfterLast('.', "").lowercase() in VAULT_VIDEO_EXTENSIONS
+
+    private fun mimeTypeForVaultFile(fileName: String, isVideo: Boolean): String {
+        val extension = fileName.substringAfterLast('.', "").lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+            ?: if (isVideo) "video/mp4" else "image/jpeg"
+    }
+
+    private fun readIndex(): List<VaultItem> = readIndexStrict() ?: emptyList()
+
+    /** Returns null when the index exists but cannot be parsed. */
+    private fun readIndexStrict(): List<VaultItem>? {
         val file = indexFile.baseFile
         if (!file.exists()) return emptyList()
         return try {
@@ -475,13 +639,13 @@ class VaultRepository(private val context: Context) {
             }
             list
         } catch (e: Exception) {
-            emptyList()
+            null
         }
     }
 
-    private fun writeIndex(items: List<VaultItem>) {
+    private fun writeIndex(items: List<VaultItem>): Boolean {
         var stream: FileOutputStream? = null
-        try {
+        return try {
             val array = JSONArray()
             for (item in items) {
                 val obj = JSONObject().apply {
@@ -508,8 +672,20 @@ class VaultRepository(private val context: Context) {
             stream = indexFile.startWrite()
             stream.write(array.toString(2).toByteArray(Charsets.UTF_8))
             indexFile.finishWrite(stream)
+            true
         } catch (e: Exception) {
-            indexFile.failWrite(stream)
+            runCatching { stream?.let { indexFile.failWrite(it) } }
+            false
         }
+    }
+
+    /**
+     * Writes the index and reads it back before callers are allowed to run destructive steps
+     * (deleting originals). If this returns false, nothing that was copied may be moved again.
+     */
+    private fun persistIndexVerified(items: List<VaultItem>): Boolean {
+        if (!writeIndex(items)) return false
+        val readBack = readIndexStrict() ?: return false
+        return readBack.size == items.size
     }
 }

@@ -494,6 +494,7 @@
     <string name="app_lock_subtitle">Enter Gallery PIN to unlock</string>
     <string name="app_lock_picker_subtitle">Enter Gallery PIN to select photos</string>
     <string name="app_lock_wrong_pin">Incorrect PIN. Please try again.</string>
+    <string name="app_lock_too_many_attempts">Too many attempts. Try again in %1$ds.</string>
     <string name="app_lock_biometric_title">Unlock Iris Gallery</string>
     <string name="app_lock_biometric_subtitle">Scan your fingerprint to continue</string>
     <string name="app_lock_scan_fingerprint">Scan your fingerprint to continue</string>
@@ -563,6 +564,8 @@
     <string name="editor_update_text">Update Text</string>
     <string name="editor_delete_text">Delete Text</string>
     <string name="editor_text_size">Text size · %1$d</string>
+    <string name="editor_text_rotation">Rotation %1$d°</string>
+    <string name="editor_reset_rotation">Reset rotation</string>
     <string name="editor_text_bg">Background</string>
     <string name="editor_text_bg_dark">Dark bg</string>
     <string name="editor_text_bg_light">Light bg</string>
@@ -614,6 +617,7 @@
 
     <!-- Toasts -->
     <string name="toast_items_vaulted">%1$d item(s) moved to hidden vault</string>
+    <string name="toast_vault_index_failed">Couldn\'t save the vault index. Nothing was deleted, please try again.</string>
     <string name="toast_vault_items_moved">%1$d item(s) moved to hidden vault</string>
     <string name="toast_vault_items_locked_gallery">%1$d item(s) hidden in Iris Gallery</string>
     <string name="toast_vault_items_restored">%1$d item(s) restored from vault</string>

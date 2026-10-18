@@ -29,18 +29,23 @@ class MediaRepository(private val context: Context) {
 
     fun loadSnapshot(): List<MediaImage> = runCatching {
         DataInputStream(snapshot.openRead().buffered()).use { input ->
-            if (input.readInt() != 3) return@use emptyList()
+            val version = input.readInt()
+            if (version != 3 && version != 4) return@use emptyList()
             val list = List(input.readInt().coerceIn(0, 100_000)) {
                 val id = input.readLong(); val isVideo = input.readBoolean()
                 val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                val name = input.readUTF(); val dateTaken = input.readLong()
+                val name = input.readUTF()
+                val snapshotUri = if (version >= 4) {
+                    input.readUTF().takeIf { it.isNotBlank() }?.let { raw -> runCatching { Uri.parse(raw) }.getOrNull() }
+                } else null
+                val dateTaken = input.readLong()
                 val width = input.readInt(); val height = input.readInt()
                 val path = input.readUTF(); val bucketId = input.readLong(); val bucketName = input.readUTF()
                 val durationMs = input.readLong(); val mimeType = input.readUTF(); val sizeBytes = input.readLong()
                 val orientation = input.readInt(); val savedTitle = input.readUTF()
                 val dateModified = input.readLong(); val dateAdded = input.readLong()
                 val title = libraryPreferences.getCustomTitle(id) ?: savedTitle
-                MediaImage(id, ContentUris.withAppendedId(collection, id), name, dateTaken,
+                MediaImage(id, snapshotUri ?: ContentUris.withAppendedId(collection, id), name, dateTaken,
                     width, height, path, bucketId, bucketName,
                     isVideo, durationMs, mimeType, sizeBytes, orientation, title,
                     dateModified = dateModified, dateAdded = dateAdded)
@@ -102,15 +107,18 @@ class MediaRepository(private val context: Context) {
             android.media.MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
         }
         runCatching { context.contentResolver.delete(uri, null, null) }
-        if (id > 0) {
+        if (id > 0 && uri.authority == "media") {
+            val ghostVolume = uri.pathSegments.firstOrNull().orEmpty()
+            val isPrimary = ghostVolume.isBlank() || ghostVolume == "external" || ghostVolume == "external_primary"
+            val filesVolume = if (isPrimary) "external" else ghostVolume
             runCatching {
                 context.contentResolver.delete(
-                    MediaStore.Files.getContentUri("external"),
+                    MediaStore.Files.getContentUri(filesVolume),
                     "${MediaStore.MediaColumns._ID}=?",
                     arrayOf(id.toString())
                 )
             }
-            if (android.os.Build.VERSION.SDK_INT >= 29) {
+            if (isPrimary && android.os.Build.VERSION.SDK_INT >= 29) {
                 runCatching {
                     context.contentResolver.delete(
                         MediaStore.Files.getContentUri("external_primary"),
@@ -641,7 +649,15 @@ class MediaRepository(private val context: Context) {
                         val relPath = if (relCol >= 0) cursor.getString(relCol) else null
                         val resolvedPath = when {
                             !rawData.isNullOrBlank() -> rawData
-                            !relPath.isNullOrBlank() && !resolvedName.isNullOrBlank() -> "/storage/emulated/0/$relPath$resolvedName"
+                            !relPath.isNullOrBlank() && !resolvedName.isNullOrBlank() -> {
+                                val volName = canonicalUri.pathSegments.firstOrNull().orEmpty()
+                                val root = if (volName.isBlank() || volName == "external" || volName == "external_primary") {
+                                    "/storage/emulated/0/"
+                                } else {
+                                    "/storage/$volName/"
+                                }
+                                "$root$relPath$resolvedName"
+                            }
                             else -> null
                         }
                         Pair(resolvedName, resolvedPath)
@@ -687,7 +703,7 @@ class MediaRepository(private val context: Context) {
                 verifiedPathsCache.remove(item.path)
                 verifiedPathsCache[renamedPath] = System.currentTimeMillis()
 
-                if (item.id > 0) {
+                if (item.id > 0 && canonicalUri.authority == "media") {
                     val values = android.content.ContentValues().apply {
                         put(MediaStore.MediaColumns.DISPLAY_NAME, resolvedFinalName)
                         if (android.os.Build.VERSION.SDK_INT <= 28) {
@@ -716,9 +732,10 @@ class MediaRepository(private val context: Context) {
         runCatching {
             stream = snapshot.startWrite()
             val output = DataOutputStream(stream!!.buffered())
-            output.writeInt(3); output.writeInt(media.size)
+            output.writeInt(4); output.writeInt(media.size)
             media.forEach { item ->
                 output.writeLong(item.id); output.writeBoolean(item.isVideo); output.writeUTF(item.name.take(8_000))
+                output.writeUTF(item.uri.toString().take(4_000))
                 output.writeLong(item.dateTaken); output.writeInt(item.width); output.writeInt(item.height)
                 output.writeUTF(item.path.take(16_000)); output.writeLong(item.bucketId); output.writeUTF(item.bucketName.take(8_000))
                 output.writeLong(item.durationMs); output.writeUTF(item.mimeType.take(1_000)); output.writeLong(item.sizeBytes)

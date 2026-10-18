@@ -46,6 +46,8 @@ class IrisPhotoWidget : AppWidgetProvider() {
                         prefs.edit().putInt("offset_$id", prefs.getInt("offset_$id", 0) + 1).apply()
                         update(context, AppWidgetManager.getInstance(context), id)
                     }
+                } catch (error: Throwable) {
+                    Log.e("IrisWidget", "next failed", error)
                 } finally { pending.finish() }
             }
             return
@@ -156,8 +158,16 @@ class IrisPhotoWidget : AppWidgetProvider() {
         val outputWidth = 840
         val outputHeight = (outputWidth / ratio).toInt().coerceIn(420, 900)
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, memory.id)
-        val source = runCatching { context.contentResolver.loadThumbnail(uri, Size(outputWidth, outputHeight), null) }.getOrNull()
-            ?: return emptyCard(ratio)
+        val source = runCatching {
+            if (Build.VERSION.SDK_INT >= 29) {
+                context.contentResolver.loadThumbnail(uri, Size(outputWidth, outputHeight), null)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaStore.Images.Thumbnails.getThumbnail(
+                    context.contentResolver, memory.id, MediaStore.Images.Thumbnails.MINI_KIND, null
+                )
+            }
+        }.getOrNull() ?: return emptyCard(ratio)
         val output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
         val corner = 54f

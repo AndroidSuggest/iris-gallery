@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import com.iris.gallery.data.SettingsPreferences
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import com.iris.gallery.data.DuplicateDetector
 import com.iris.gallery.data.DuplicateGroup
 import com.iris.gallery.data.ExifEditRequest
@@ -73,9 +74,13 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         viewModelScope.launch {
-            settingsPreferences.state.map { it.useSystemTrash }.collect {
+            settingsPreferences.state.map { it.useSystemTrash }.distinctUntilChanged().collect {
                 refresh(showLoading = false)
             }
+        }
+        viewModelScope.launch {
+            // Adopt vault files that were copied but never made it into the index.
+            vaultRepository.recoverOrphanedItems()
         }
     }
 

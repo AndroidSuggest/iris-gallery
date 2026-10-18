@@ -56,9 +56,12 @@ object ThumbnailCache {
     fun get(key: Long): Bitmap? = cache.get(key)
     fun put(key: Long, bitmap: Bitmap) = cache.put(key, bitmap)
 
+    // Must cover every size getThumbnailTargetSizePx can return, or stale entries survive remove().
+    private val bucketSizes = listOf(180, 256, 320, 384, 512, 768)
+
     fun findForImage(id: Long): Bitmap? {
         cache.get(id)?.let { return it }
-        for (bucket in listOf(320, 180, 512, 768, 256)) {
+        for (bucket in bucketSizes) {
             val key = (id shl 16) xor (bucket.toLong() and 0xFFFFL)
             cache.get(key)?.let { return it }
         }
@@ -67,7 +70,7 @@ object ThumbnailCache {
 
     fun remove(id: Long) {
         cache.remove(id)
-        for (bucket in listOf(320, 180, 512, 768, 256)) {
+        for (bucket in bucketSizes) {
             val key = (id shl 16) xor (bucket.toLong() and 0xFFFFL)
             cache.remove(key)
         }

@@ -477,6 +477,7 @@
 
     <!-- Toasts -->
     <string name="toast_items_vaulted">%1$d 个项目已移至私密相册</string>
+    <string name="toast_vault_index_failed">无法保存私密相册索引，未删除任何文件，请重试。</string>
     <string name="toast_vault_items_moved">%1$d 个项目已移至私密相册</string>
     <string name="toast_vault_items_locked_gallery">%1$d 个项目已在 Iris Gallery 中隐藏</string>
     <string name="toast_vault_items_restored">%1$d 个项目已从私密相册中恢复</string>

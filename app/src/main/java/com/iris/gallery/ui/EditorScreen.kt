@@ -2,7 +2,6 @@ package com.iris.gallery.ui
 
 import android.app.Activity
 import android.app.RecoverableSecurityException
-import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
@@ -30,6 +29,8 @@ import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -64,20 +65,16 @@ import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.BlurOn
-import androidx.compose.material.icons.outlined.BrightnessMedium
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.outlined.CropRotate
 import androidx.compose.material.icons.outlined.CropSquare
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.HorizontalRule
-import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -114,7 +111,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -146,6 +146,22 @@ enum class MarkupSubMode {
 enum class PrivacySubMode {
     BLUR,
     PIXELATE
+}
+
+enum class AdjustKind(
+    val defaultValue: Float,
+    val valueRange: ClosedFloatingPointRange<Float>
+) {
+    BRIGHTNESS(0f, -0.5f..0.5f),
+    CONTRAST(1f, 0.5f..1.5f),
+    SATURATION(1f, 0f..2f),
+    WARMTH(0f, -1f..1f);
+
+    fun percentOf(value: Float): Int = when (this) {
+        BRIGHTNESS -> (value * 200f).roundToInt()
+        CONTRAST, SATURATION -> ((value - 1f) * 100f).roundToInt()
+        WARMTH -> (value * 100f).roundToInt()
+    }
 }
 
 enum class ExportFormat(
@@ -229,6 +245,7 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
     var saturation by remember { mutableFloatStateOf(1f) }
     var contrast by remember { mutableFloatStateOf(1f) }
     var warmth by remember { mutableFloatStateOf(0f) }
+    var selectedAdjust by remember { mutableStateOf(AdjustKind.BRIGHTNESS) }
     var brushSize by remember { mutableFloatStateOf(.07f) }
     var strength by remember { mutableFloatStateOf(18f) }
     var erasing by remember { mutableStateOf(false) }
@@ -429,6 +446,9 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                                 view.onTextSelected = { overlay ->
                                     selectedOverlay = overlay
                                 }
+                                view.onTextTransformed = { overlay ->
+                                    selectedOverlay = overlay.copy()
+                                }
                                 view.onZoomChanged = { zoom ->
                                     canvasZoom = zoom
                                 }
@@ -494,10 +514,21 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                     }
                 }
 
+                val panelHeight = when {
+                    landscape -> 130.dp
+                    category == EditorCategory.ADJUST -> 140.dp
+                    else -> 225.dp
+                }
+                val animatedPanelHeight by animateDpAsState(
+                    targetValue = panelHeight,
+                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                    label = "EditorPanelHeight"
+                )
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (landscape) 130.dp else 225.dp)
+                        .height(animatedPanelHeight)
                 ) {
                     AnimatedContent(
                         targetState = category,
@@ -538,6 +569,8 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                                     onOpenResize = { showResizeDialog = true }
                                 )
                                 EditorCategory.ADJUST -> AdjustControls(
+                                    selected = selectedAdjust,
+                                    onSelect = { selectedAdjust = it },
                                     brightness = brightness,
                                     saturation = saturation,
                                     contrast = contrast,
@@ -585,6 +618,7 @@ fun EditorScreen(image: MediaImage, onClose: () -> Unit, onSaved: (saved: Boolea
                                             selectedOverlay = newOverlay
                                         }
                                     },
+                                    onTextRotated = { deg -> editorView?.setSelectedTextRotation(deg) },
                                     onDeleteText = {
                                         editorView?.removeSelectedText()
                                         selectedOverlay = null
@@ -1040,6 +1074,8 @@ private fun TransformControls(
 
 @Composable
 private fun AdjustControls(
+    selected: AdjustKind,
+    onSelect: (AdjustKind) -> Unit,
     brightness: Float,
     saturation: Float,
     contrast: Float,
@@ -1050,14 +1086,30 @@ private fun AdjustControls(
     onWarmth: (Float) -> Unit,
     onReset: () -> Unit
 ) {
-    val isModified = brightness != 0f || saturation != 1f || contrast != 1f || warmth != 0f
+    val anyModified = brightness != 0f || saturation != 1f || contrast != 1f || warmth != 0f
+    val selectedValue = when (selected) {
+        AdjustKind.BRIGHTNESS -> brightness
+        AdjustKind.CONTRAST -> contrast
+        AdjustKind.SATURATION -> saturation
+        AdjustKind.WARMTH -> warmth
+    }
+    val onSelectedValueChange = when (selected) {
+        AdjustKind.BRIGHTNESS -> onBrightness
+        AdjustKind.CONTRAST -> onContrast
+        AdjustKind.SATURATION -> onSaturation
+        AdjustKind.WARMTH -> onWarmth
+    }
+    val selectedLabel = adjustKindLabel(selected)
+    val selectedModified = selectedValue != selected.defaultValue
+    val percent = selected.percentOf(selectedValue)
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(stringResource(R.string.editor_category_adjust), style = MaterialTheme.typography.titleSmall)
-        if (isModified) {
+        if (anyModified) {
             TextButton(
                 onClick = onReset,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
@@ -1069,72 +1121,61 @@ private fun AdjustControls(
         }
     }
 
-    AdjustSliderRow(
-        icon = Icons.Outlined.BrightnessMedium,
-        label = stringResource(R.string.editor_brightness),
-        value = brightness,
-        displayValue = "${(brightness * 200).toInt()}%",
-        valueRange = -0.5f..0.5f,
-        onValueChange = onBrightness
-    )
-
-    AdjustSliderRow(
-        icon = Icons.Outlined.Contrast,
-        label = stringResource(R.string.editor_contrast),
-        value = contrast,
-        displayValue = "${((contrast - 1f) * 100).toInt()}%",
-        valueRange = 0.5f..1.5f,
-        onValueChange = onContrast
-    )
-
-    AdjustSliderRow(
-        icon = Icons.Outlined.Palette,
-        label = stringResource(R.string.editor_saturation),
-        value = saturation,
-        displayValue = "${((saturation - 1f) * 100).toInt()}%",
-        valueRange = 0f..2f,
-        onValueChange = onSaturation
-    )
-
-    AdjustSliderRow(
-        icon = Icons.Outlined.WbSunny,
-        label = stringResource(R.string.editor_warmth),
-        value = warmth,
-        displayValue = "${(warmth * 100).toInt()}%",
-        valueRange = -1f..1f,
-        onValueChange = onWarmth
-    )
-}
-
-@Composable
-private fun AdjustSliderRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    value: Float,
-    displayValue: String,
-    valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit
-) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Icon(icon, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(label, modifier = Modifier.width(76.dp), style = MaterialTheme.typography.bodySmall)
         Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = valueRange,
-            modifier = Modifier.weight(1f)
+            value = selectedValue,
+            onValueChange = onSelectedValueChange,
+            valueRange = selected.valueRange,
+            modifier = Modifier
+                .weight(1f)
+                .semantics { contentDescription = selectedLabel }
         )
         Text(
-            displayValue,
-            modifier = Modifier.width(42.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = "${if (percent > 0) "+" else ""}$percent%",
+            modifier = Modifier.width(46.dp),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selectedModified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.End
         )
+        IconButton(
+            onClick = { onSelectedValueChange(selected.defaultValue) },
+            enabled = selectedModified
+        ) {
+            Icon(
+                Icons.Outlined.RestartAlt,
+                contentDescription = stringResource(R.string.editor_reset_adjustments),
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        AdjustKind.entries.forEach { kind ->
+            FilterChip(
+                selected = kind == selected,
+                onClick = { onSelect(kind) },
+                label = { Text(adjustKindLabel(kind)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun adjustKindLabel(kind: AdjustKind): String = when (kind) {
+    AdjustKind.BRIGHTNESS -> stringResource(R.string.editor_brightness)
+    AdjustKind.CONTRAST -> stringResource(R.string.editor_contrast)
+    AdjustKind.SATURATION -> stringResource(R.string.editor_saturation)
+    AdjustKind.WARMTH -> stringResource(R.string.editor_warmth)
 }
 
 @Composable
@@ -1156,6 +1197,7 @@ private fun MarkupControls(
     onShapeStrokeSizeChange: (Float) -> Unit,
     selectedOverlay: TextOverlay?,
     onAddOrUpdateText: (String, Int, Int, Float) -> Unit,
+    onTextRotated: (Float) -> Unit,
     onDeleteText: () -> Unit,
     onClearAllText: () -> Unit,
     onDeselect: () -> Unit
@@ -1216,6 +1258,7 @@ private fun MarkupControls(
             TextControls(
                 selectedOverlay = selectedOverlay,
                 onAddOrUpdateText = onAddOrUpdateText,
+                onTextRotated = onTextRotated,
                 onDeleteText = onDeleteText,
                 onClearAllText = onClearAllText,
                 onDeselect = onDeselect
@@ -1777,6 +1820,7 @@ private fun ShapeControls(
 private fun TextControls(
     selectedOverlay: TextOverlay?,
     onAddOrUpdateText: (String, Int, Int, Float) -> Unit,
+    onTextRotated: (Float) -> Unit,
     onDeleteText: () -> Unit,
     onClearAllText: () -> Unit,
     onDeselect: () -> Unit
@@ -1792,7 +1836,8 @@ private fun TextControls(
             }
         )
     }
-    var textSizeRatio by remember(selectedOverlay?.id) { mutableFloatStateOf(selectedOverlay?.textSizeRatio ?: 0.05f) }
+    var textSizeRatio by remember(selectedOverlay?.textSizeRatio) { mutableFloatStateOf(selectedOverlay?.textSizeRatio ?: 0.05f) }
+    var rotationDeg by remember(selectedOverlay?.rotationDeg) { mutableFloatStateOf(selectedOverlay?.rotationDeg ?: 0f) }
 
     val colors = remember {
         listOf(
@@ -1848,10 +1893,37 @@ private fun TextControls(
         }
     }
 
-    Text(
-        stringResource(R.string.editor_text_size, (textSizeRatio * 1000).toInt()),
-        style = MaterialTheme.typography.titleSmall
-    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            stringResource(R.string.editor_text_size, (textSizeRatio * 1000).toInt()),
+            style = MaterialTheme.typography.titleSmall
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                stringResource(R.string.editor_text_rotation, rotationDeg.roundToInt()),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (rotationDeg != 0f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (rotationDeg != 0f) {
+                IconButton(
+                    onClick = {
+                        rotationDeg = 0f
+                        onTextRotated(0f)
+                    }
+                ) {
+                    Icon(
+                        Icons.Outlined.RestartAlt,
+                        stringResource(R.string.editor_reset_rotation),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
     Slider(
         value = textSizeRatio,
         onValueChange = {
@@ -2051,27 +2123,6 @@ private val EXIF_TAGS_TO_PRESERVE = listOf(
     ExifInterface.TAG_GPS_PROCESSING_METHOD,
     ExifInterface.TAG_IMAGE_UNIQUE_ID
 )
-
-private fun canonicalMediaUri(context: Context, item: MediaImage): Uri {
-    if (item.id > 0) {
-        val vol = if (Build.VERSION.SDK_INT >= 29) {
-            if (item.path.startsWith("/storage/")) {
-                val parts = item.path.split('/')
-                if (parts.size > 2 && parts[2] != "emulated" && parts[2] != "self") {
-                    parts[2]
-                } else "external"
-            } else "external"
-        } else "external"
-        val baseTable = if (Build.VERSION.SDK_INT >= 29) MediaStore.Images.Media.getContentUri(vol)
-        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        return ContentUris.withAppendedId(baseTable, item.id)
-    }
-    val uriStr = item.uri.toString()
-    if (uriStr.startsWith("content://media/")) {
-        return item.uri.buildUpon().clearQuery().build()
-    }
-    return item.uri
-}
 
 private fun readExifTags(context: Context, sourceImage: MediaImage): Map<String, String> {
     return runCatching {
@@ -2380,9 +2431,25 @@ private suspend fun performOverwriteWrite(
     val isFile = image.uri.scheme == "file" || image.path.startsWith(context.filesDir.absolutePath)
     if (isFile) {
         val targetFile = File(image.path)
-        targetFile.parentFile?.mkdirs()
-        targetFile.writeBytes(bytes)
-        applyExifToFile(targetFile, tags)
+        val parent = targetFile.absoluteFile.parentFile ?: return@withContext false
+        parent.mkdirs()
+        // Stage the write in a sibling temp file: a process kill mid-write must never
+        // truncate the only copy of the original.
+        val tempFile = File(parent, ".${targetFile.name}.iris_tmp")
+        val written = runCatching {
+            tempFile.writeBytes(bytes)
+            applyExifToFile(tempFile, tags)
+            java.nio.file.Files.move(
+                tempFile.toPath(),
+                targetFile.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
+            true
+        }.getOrElse {
+            runCatching { tempFile.delete() }
+            false
+        }
+        if (!written) return@withContext false
     } else {
         val targetUri = canonicalMediaUri(context, image)
         val written = context.contentResolver.openOutputStream(targetUri)?.use { out ->
@@ -2527,6 +2594,8 @@ private fun renderTextOverlays(target: Bitmap, overlays: List<TextOverlay>, crop
             x + bounds.width() / 2f + paddingX,
             y + bounds.height() / 2f + paddingY
         )
+        canvas.save()
+        canvas.rotate(overlay.rotationDeg, x, y)
         if (overlay.bgColor != 0) {
             val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = overlay.bgColor
@@ -2536,5 +2605,6 @@ private fun renderTextOverlays(target: Bitmap, overlays: List<TextOverlay>, crop
         }
         val textY = y + bounds.height() / 2f - bounds.bottom
         canvas.drawText(overlay.text, x, textY, textPaint)
+        canvas.restore()
     }
 }

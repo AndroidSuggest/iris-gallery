@@ -617,7 +617,7 @@ private fun loadDirectoryContents(directory: File): List<FolderItem> {
         } else if (isMediaFile(file)) {
             val isVid = file.extension.lowercase(Locale.ROOT) in VIDEO_EXTENSIONS
             val media = MediaImage(
-                id = file.hashCode().toLong(),
+                id = syntheticFileId(file),
                 uri = Uri.fromFile(file),
                 name = file.name,
                 dateTaken = file.lastModified(),
@@ -636,6 +636,15 @@ private fun loadDirectoryContents(directory: File): List<FolderItem> {
     }
 
     return items.sortedWith(compareByDescending<FolderItem> { it.isDirectory }.thenBy { it.file.name.lowercase(Locale.ROOT) })
+}
+
+/**
+ * Negative, deterministic ids keep raw filesystem entries out of the positive MediaStore id
+ * space, so every `id > 0` branch falls back to path based handling for these items.
+ */
+private fun syntheticFileId(file: File): Long {
+    val hash = file.absolutePath.hashCode().toLong()
+    return -(if (hash < 0) -hash else hash) - 1L
 }
 
 private fun isMediaFile(file: File): Boolean {

@@ -651,6 +651,7 @@ fun VideoPage(
                         it.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_artwork)?.visibility = android.view.View.GONE
                         it.findViewById<android.view.View>(androidx.media3.ui.R.id.exo_shutter)?.visibility = android.view.View.GONE
                     },
+                    onRelease = { it.player = null },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -840,7 +841,15 @@ fun VideoPage(
                         tint = if (isLooping) MaterialTheme.colorScheme.primary else Color.White
                     )
                 }
-                IconButton(onClick = { if (engine.player.isPlaying) engine.player.pause() else engine.player.play() }) {
+                IconButton(onClick = {
+                    val player = engine.player
+                    if (player.isPlaying) {
+                        player.pause()
+                    } else {
+                        if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+                        player.play()
+                    }
+                }) {
                     AnimatedContent(
                         targetState = playing,
                         transitionSpec = {
