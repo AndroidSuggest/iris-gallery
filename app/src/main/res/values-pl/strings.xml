@@ -802,7 +802,7 @@
     <string name="section_videos_desc">Wszystkie pliki wideo w Twojej bibliotece</string>
     <string name="empty_videos">Nie znaleziono filmów</string>
     <string name="filter_videos">Wideo</string>
-    <string name="filter_videos_count">Wideo (%1)</string>
+    <string name="filter_videos_count">Wideo (%1$d)</string>
     
     <string name="viewer_secure_sharing_tip">Bezpieczne udostępnianie: usuwaj lokalizację lub metadane przed udostępnieniem. Dotknij, aby skonfigurować.</string>
     <string name="viewer_secure_sharing_tip_location">Bezpieczne udostępnianie: lokalizacja GPS jest usuwana przed udostępnieniem. Dotknij, aby skonfigurować.</string>
