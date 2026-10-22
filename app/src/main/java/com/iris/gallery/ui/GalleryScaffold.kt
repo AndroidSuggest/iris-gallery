@@ -379,7 +379,11 @@ internal fun GalleryScaffold(
             tabPagerState.scrollToPage(visibleTabs.lastIndex.coerceAtLeast(0))
         }
     }
-    val currentVisibleTab = visibleTabs.getOrElse(tabPagerState.targetPage.coerceIn(0, visibleTabs.lastIndex)) { visibleTabs.first() }
+    // Use the settled page so the top bar and its actions don't flip to the next
+    // tab while the user is still dragging and might release back on the current one.
+    val currentVisibleTab = visibleTabs.getOrElse(tabPagerState.settledPage.coerceIn(0, visibleTabs.lastIndex)) { visibleTabs.first() }
+    // The bottom bar should track the pager right away, not wait for the fling to settle.
+    val navVisibleTab = visibleTabs.getOrElse(tabPagerState.targetPage.coerceIn(0, visibleTabs.lastIndex)) { visibleTabs.first() }
     val destination = currentVisibleTab.destination
     var selectedId by remember { mutableStateOf<Long?>(null) }
     var externalMedia by remember { mutableStateOf<MediaImage?>(null) }
@@ -981,8 +985,11 @@ internal fun GalleryScaffold(
                                         leadingIcon = { Icon(Icons.Outlined.Lock, null) },
                                         onClick = {
                                             albumOptionsMenuExpanded = false
+                                            // Stay in the album until the lock actually happens. The
+                                            // vault prompt and the system delete dialog can still be
+                                            // cancelled, and the album drops out below by itself once
+                                            // its images are filtered out.
                                             onLockMedia(selectedAlbum!!.images)
-                                            selectedAlbumId = null
                                         }
                                     )
                                     DropdownMenuItem(
@@ -1077,7 +1084,7 @@ internal fun GalleryScaffold(
                         modifier = Modifier.widthIn(max = 560.dp)
                     ) {
                         visibleTabs.forEachIndexed { index, tab ->
-                            val isSelected = currentVisibleTab == tab
+                            val isSelected = navVisibleTab == tab
                             val label = if (tab == GalleryTab.PHOTOS) photoTabLabel else stringResource(tab.labelRes)
                             NavigationBarItem(
                                 selected = isSelected,
@@ -1772,7 +1779,7 @@ internal fun GalleryScaffold(
                 modifier = Modifier.height(60.dp)
             ) {
                 visibleTabs.forEachIndexed { index, tab ->
-                    val isSelected = currentVisibleTab == tab
+                    val isSelected = navVisibleTab == tab
                     val label = if (tab == GalleryTab.PHOTOS) photoTabLabel else stringResource(tab.labelRes)
                     NavigationBarItem(
                         selected = isSelected,

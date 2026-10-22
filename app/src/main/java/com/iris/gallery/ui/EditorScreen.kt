@@ -72,12 +72,15 @@ import androidx.compose.material.icons.outlined.CropSquare
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Draw
+import androidx.compose.material.icons.outlined.Flip
 import androidx.compose.material.icons.outlined.HorizontalRule
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -85,7 +88,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -107,6 +109,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -944,55 +947,69 @@ private fun TransformControls(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        OutlinedButton(
+        FilledTonalIconButton(
             onClick = onRotateLeft,
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+            modifier = Modifier.weight(1f).height(46.dp)
         ) {
-            Icon(Icons.AutoMirrored.Outlined.RotateLeft, null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.editor_rotate_left), maxLines = 1, style = MaterialTheme.typography.bodySmall)
+            Icon(
+                Icons.AutoMirrored.Outlined.RotateLeft,
+                contentDescription = stringResource(R.string.editor_rotate_left),
+                modifier = Modifier.size(20.dp)
+            )
         }
-        OutlinedButton(
+        FilledTonalIconButton(
             onClick = onRotateRight,
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+            modifier = Modifier.weight(1f).height(46.dp)
         ) {
-            Icon(Icons.AutoMirrored.Outlined.RotateRight, null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.editor_rotate_right), maxLines = 1, style = MaterialTheme.typography.bodySmall)
+            Icon(
+                Icons.AutoMirrored.Outlined.RotateRight,
+                contentDescription = stringResource(R.string.editor_rotate_right),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        FilledIconToggleButton(
+            checked = flipH,
+            onCheckedChange = { onToggleFlipH() },
+            modifier = Modifier.weight(1f).height(46.dp)
+        ) {
+            Icon(
+                Icons.Outlined.Flip,
+                contentDescription = stringResource(R.string.editor_flip_horizontal),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        FilledIconToggleButton(
+            checked = flipV,
+            onCheckedChange = { onToggleFlipV() },
+            modifier = Modifier.weight(1f).height(46.dp)
+        ) {
+            Icon(
+                Icons.Outlined.Flip,
+                contentDescription = stringResource(R.string.editor_flip_vertical),
+                modifier = Modifier.size(20.dp).rotate(90f)
+            )
+        }
+        FilledTonalIconButton(
+            onClick = onOpenResize,
+            modifier = Modifier.weight(1f).height(46.dp)
+        ) {
+            Icon(
+                Icons.Outlined.AspectRatio,
+                contentDescription = stringResource(R.string.editor_custom_resize),
+                modifier = Modifier.size(20.dp)
+            )
         }
         if (rotation != 0 || flipH || flipV) {
-            IconButton(onClick = onReset, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Outlined.RestartAlt, stringResource(R.string.editor_reset_orientation), modifier = Modifier.size(20.dp))
+            FilledTonalIconButton(
+                onClick = onReset,
+                modifier = Modifier.weight(1f).height(46.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.RestartAlt,
+                    contentDescription = stringResource(R.string.editor_reset_orientation),
+                    modifier = Modifier.size(20.dp)
+                )
             }
-        }
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        FilterChip(
-            selected = flipH,
-            onClick = onToggleFlipH,
-            label = { Text(stringResource(R.string.editor_flip_horizontal), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall) },
-            modifier = Modifier.weight(1f)
-        )
-        FilterChip(
-            selected = flipV,
-            onClick = onToggleFlipV,
-            label = { Text(stringResource(R.string.editor_flip_vertical), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall) },
-            modifier = Modifier.weight(1f)
-        )
-        OutlinedButton(
-            onClick = onOpenResize,
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
-        ) {
-            Icon(Icons.Outlined.AspectRatio, null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.editor_custom_resize), style = MaterialTheme.typography.bodySmall)
         }
     }
 
